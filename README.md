@@ -1,4 +1,4 @@
-# 🟢 Эмулятор бэкенда «МегаФон Деньги» (Legacy API 2012)
+# Эмулятор бэкенда «МегаФон Деньги» (Legacy API 2012)
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
 ![Flask](https://img.shields.io/badge/Flask-Web%20Framework-lightgrey.svg)
