@@ -34,8 +34,8 @@
 ### 2. Настройка
 1. Склонируйте репозиторий:
    ```bash
-   git clone https://github.com/ВАШ_ЛОГИН/megafon-dengi-emulator.git
-   cd megafon-dengi-emulator
+   git clone https://github.com/artemchik12/megafon-money-server.git
+   cd megafon-money-server
    ```
 2. Откройте файл `server.py` и заполните данные для Telegram-бота:
    ```python
