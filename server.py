@@ -9,7 +9,7 @@ from flask import Flask, request, jsonify
 import telebot
 
 # ==========================================
-# НАСТРОЙКИ СЕРВЕРА
+# ⚙️ НАСТРОЙКИ СЕРВЕРА
 # ==========================================
 BOT_TOKEN = "ВАШ_ТОКЕН_ОТ_BOTFATHER"  # Вставьте токен вашего бота
 ADMIN_CHAT_ID = "ВАШ_CHAT_ID"         # Вставьте ваш Chat ID (узнать у @userinfobot)
@@ -19,7 +19,7 @@ app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ==========================================
-# БАЗА ДАННЫХ SQLITE
+# 🗄 БАЗА ДАННЫХ SQLITE
 # ==========================================
 def get_db_connection():
     conn = sqlite3.connect('wallet.db', check_same_thread=False)
@@ -57,17 +57,16 @@ def init_db():
     print("[+] База данных SQLite успешно загружена.")
 
 # ==========================================
-# TELEGRAM БОТ (УПРАВЛЕНИЕ)
-# =========================================
-
+# 🤖 TELEGRAM БОТ (УПРАВЛЕНИЕ)
+# ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    text = ("Привет! Я сервер-эмулятор МегаФон Деньги.\n\n"
+    text = ("🤖 Привет! Я сервер-эмулятор МегаФон Деньги.\n\n"
             "Доступные команды:\n"
-            "/users — Список всех кошельков\n"
-            "/register <номер> <пароль> — Создать кошелек\n"
-            "/add_money <номер> <сумма> — Начислить деньги\n"
-            "/add_card <номер> <карта_16_цифр> [название] — Выдать карту")
+            "👥 /users — Список всех кошельков\n"
+            "📝 /register <номер> <пароль> — Создать кошелек\n"
+            "💰 /add_money <номер> <сумма> — Начислить деньги\n"
+            "💳 /add_card <номер> <карта_16_цифр> [название] — Выдать карту")
     bot.reply_to(message, text)
 
 @bot.message_handler(commands=['register'])
@@ -75,7 +74,7 @@ def register_user(message):
     try:
         parts = message.text.split()
         if len(parts) != 3:
-            bot.reply_to(message, "Формат: /register 79260000000 123456")
+            bot.reply_to(message, "⚠️ Формат: /register 79260000000 123456")
             return
         phone, password = parts[1], parts[2]
         conn = get_db_connection()
@@ -83,22 +82,22 @@ def register_user(message):
         
         if user:
             conn.execute('UPDATE users SET password = ? WHERE phone = ?', (password, phone))
-            bot.reply_to(message, f"Пароль для {phone} обновлен.")
+            bot.reply_to(message, f"🔄 Пароль для {phone} обновлен.")
         else:
             conn.execute('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)', 
                          (phone, password, None, 1000.0))
-            bot.reply_to(message, f"Кошелек {phone} зарегистрирован!\nПароль: {password}\nБаланс: 1000 руб.")
+            bot.reply_to(message, f"✅ Кошелек {phone} зарегистрирован!\nПароль: {password}\nБаланс: 1000 руб.")
         conn.commit()
         conn.close()
     except Exception as e:
-        bot.reply_to(message, f" Ошибка: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {e}")
 
 @bot.message_handler(commands=['add_card'])
 def add_card(message):
     try:
         parts = message.text.split(maxsplit=3)
         if len(parts) < 3:
-            bot.reply_to(message, "Формат: /add_card 79260000000 4276111122223333 Зарплатная")
+            bot.reply_to(message, "⚠️ Формат: /add_card 79260000000 4276111122223333 Зарплатная")
             return
         phone, card_raw = parts[1], parts[2]
         alias = parts[3] if len(parts) > 3 else "Моя карта"
@@ -113,16 +112,16 @@ def add_card(message):
         conn = get_db_connection()
         if not conn.execute('SELECT phone FROM users WHERE phone = ?', (phone,)).fetchone():
             conn.close()
-            bot.reply_to(message, f"Кошелек {phone} не найден!")
+            bot.reply_to(message, f"❌ Кошелек {phone} не найден!")
             return
             
         conn.execute('''INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) 
                         VALUES (?, ?, ?, ?, ?, ?)''', (phone, card_id, alias, card_masked, "1", card_type))
         conn.commit()
         conn.close()
-        bot.reply_to(message, f"Карта {card_masked} ({card_type}) выдана кошельку {phone}!")
+        bot.reply_to(message, f"💳 Карта {card_masked} ({card_type}) выдана кошельку {phone}!")
     except Exception as e:
-        bot.reply_to(message, f"Ошибка: {e}")
+        bot.reply_to(message, f"❌ Ошибка: {e}")
 
 @bot.message_handler(commands=['users'])
 def list_users(message):
@@ -132,7 +131,7 @@ def list_users(message):
     if not users:
         bot.reply_to(message, "Пользователей пока нет.")
         return
-    text = "Зарегистрированные кошельки:\n"
+    text = "👥 Зарегистрированные кошельки:\n"
     for u in users:
         text += f"📱 {u['phone']} | 🔑 {u['password']} | 💰 {u['balance']} руб.\n"
     bot.reply_to(message, text)
@@ -146,16 +145,16 @@ def add_money(message):
         conn.execute('UPDATE users SET balance = balance + ? WHERE phone = ?', (amount, phone))
         conn.commit()
         conn.close()
-        bot.reply_to(message, f"Баланс {phone} пополнен на {amount} руб.")
+        bot.reply_to(message, f"✅ Баланс {phone} пополнен на {amount} руб.")
     except Exception:
-        bot.reply_to(message, "Формат: /add_money 79260000000 500")
+        bot.reply_to(message, "⚠️ Формат: /add_money 79260000000 500")
 
 def run_bot():
     print("[+] Telegram-бот запущен в фоне.")
     bot.infinity_polling()
 
 # ==========================================
-# WEBVIEW (ФЕЙКОВЫЙ ПЛАТЕЖНЫЙ ШЛЮЗ)
+# 🌐 WEBVIEW (ФЕЙКОВЫЙ ПЛАТЕЖНЫЙ ШЛЮЗ)
 # ==========================================
 @app.route('/fake_gateway', methods=['POST', 'GET'])
 def fake_gateway():
@@ -180,7 +179,7 @@ def fake_gateway():
     </head>
     <body>
         <div class="card-box">
-            <h2>Тестовый Эквайринг</h2>
+            <h2>🔒 Тестовый Эквайринг</h2>
             <p>Заказ: {payment_id}</p>
             <div class="price">{amount} ₽</div>
             <input type="text" class="input-fake" value="4276 0000 0000 0000" readonly>
@@ -198,12 +197,12 @@ def fake_gateway():
 @app.route('/gateway_success', methods=['POST'])
 def gateway_success():
     payment_id = request.form.get("payment_id")
-    bot.send_message(ADMIN_CHAT_ID, f"ЭКВАЙРИНГ!\nПользователь успешно подтвердил платеж {payment_id} в окне WebView.")
+    bot.send_message(ADMIN_CHAT_ID, f"💳 ЭКВАЙРИНГ!\nПользователь успешно подтвердил платеж {payment_id} в окне WebView.")
     return """
     <html>
     <head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
     <body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-        <h2 style="color: #00B956;">Операция выполнена</h2>
+        <h2 style="color: #00B956;">✅ Операция выполнена</h2>
         <p>Средства зачислены. Возвращаемся в приложение...</p>
         <div style="margin-top: 30px; font-size: 40px;">💸</div>
         <script>setTimeout(function(){ window.location.href = 'megafon://success'; }, 2000);</script>
@@ -212,7 +211,7 @@ def gateway_success():
     """
 
 # ==========================================
-# FLASK (ЭМУЛЯТОР API МЕГАФОНА)
+# 📞 FLASK (ЭМУЛЯТОР API МЕГАФОНА)
 # ==========================================
 @app.route('/api/odp', methods=['POST'])
 def odp_api():
@@ -244,7 +243,7 @@ def odp_api():
                 conn.execute('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)', 
                              (phone, sms_code, None, 1000.0))
             conn.commit()
-            bot.send_message(ADMIN_CHAT_ID, f"СМС Код для входа!\nНомер: {phone}\nКод: {sms_code}\nТекст для авто-ввода: мегафон {sms_code}")
+            bot.send_message(ADMIN_CHAT_ID, f"📩 СМС Код для входа!\nНомер: {phone}\nКод: {sms_code}\nТекст для авто-ввода: мегафон {sms_code}")
             return jsonify({"result": "ok"})
 
         elif action == "mobstudio.mfexpress.auth":
@@ -258,7 +257,7 @@ def odp_api():
             new_sid = str(uuid.uuid4().hex)
             conn.execute('UPDATE users SET sid = ? WHERE phone = ?', (new_sid, phone))
             conn.commit()
-            bot.send_message(ADMIN_CHAT_ID, f"Вход в кошелек: {phone}")
+            bot.send_message(ADMIN_CHAT_ID, f"🔓 Вход в кошелек: {phone}")
             return jsonify({"result": "ok", "sid": new_sid, "operator": "Мегафон", "region": "100", "autoupdate_time": 3600, "request_logs":[]})
 
         # --- 2. БАЛАНС И ПРОФИЛЬ ---
@@ -287,7 +286,7 @@ def odp_api():
             cursor = conn.execute('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time) VALUES (?, ?, ?, ?, ?)', 
                                   (sender['phone'], receiver_phone, amount, "ok", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             conn.commit()
-            bot.send_message(ADMIN_CHAT_ID, f"ПЕРЕВОД!\nОт: {sender['phone']}\nКому: {receiver_phone}\nСумма: {amount} руб.")
+            bot.send_message(ADMIN_CHAT_ID, f"💸 ПЕРЕВОД!\nОт: {sender['phone']}\nКому: {receiver_phone}\nСумма: {amount} руб.")
             return jsonify({"result": "ok", "transfer_id": str(cursor.lastrowid)})
 
         # --- 4. КАРТЫ ---
@@ -309,7 +308,7 @@ def odp_api():
             cursor = conn.execute('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time) VALUES (?, ?, ?, ?, ?)', 
                                   (f"CARD_{card_id}", user['phone'], amount, "ok", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
             conn.commit()
-            bot.send_message(ADMIN_CHAT_ID, f"ПОПОЛНЕНИЕ С КАРТЫ\nКошелек: {user['phone']}\nСумма: {amount} руб.")
+            bot.send_message(ADMIN_CHAT_ID, f"💳 ПОПОЛНЕНИЕ С КАРТЫ\nКошелек: {user['phone']}\nСумма: {amount} руб.")
             return jsonify({"result": "ok", "transfer_id": str(cursor.lastrowid)})
 
         # --- 5. ЭКВАЙРИНГ И WEBVIEW ---
