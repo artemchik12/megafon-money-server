@@ -1,25 +1,31 @@
 const express = require('express');
 const Database = require('better-sqlite3');
 const TelegramBot = require('node-telegram-bot-api');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto'); // Встроенный модуль (замена buggy uuid)
 const fs = require('fs');
 
 // ==========================================
 // ⚙️ НАСТРОЙКИ СЕРВЕРА
 // ==========================================
-const BOT_TOKEN = "8604140755:AAH20rB8l6ZLsWjrV7Gqg6NPmhK-RuHtl1Q";
-const ADMIN_CHAT_ID = "-1003892701032"; // Впишите ваш ID (строкой или числом)
-const FLASK_PORT = 4444; // Порт сервера (сохранил название переменной)
+const BOT_TOKEN = "ВАШ_ТОКЕН_ОТ_BOTFATHER";
+const ADMIN_CHAT_ID = "ВАШ_CHAT_ID";
+const FLASK_PORT = 4444;
 
 const app = express();
-// Настройки парсера для application/x-www-form-urlencoded
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
+// Безопасная отправка в ТГ (не блокирует сервер при сбоях сети)
+function notifyAdmin(text) {
+    bot.sendMessage(ADMIN_CHAT_ID, text).catch(err => {
+        console.log("[!] Ошибка отправки в Telegram:", err.message);
+    });
+}
+
 // ==========================================
-// 🗄 БАЗА ДАННЫХ SQLITE (better-sqlite3 работает синхронно, как в Python)
+// 🗄 БАЗА ДАННЫХ SQLITE
 // ==========================================
 const db = new Database('wallet.db');
 
@@ -49,159 +55,30 @@ function initDb() {
             card_type TEXT
         );
     `);
-    console.log("[+] База данных SQLite успешно загружена.");
+    console.log("[+] База данных SQLite готова.");
 }
 initDb();
 
 // ==========================================
-// 🤖 TELEGRAM БОТ
+// 🚀 КЭШИРОВАНИЕ КАТАЛОГА В ОЗУ
 // ==========================================
-bot.onText(/\/start|\/help/, (msg) => {
-    const text = "🤖 Привет! Я сервер-эмулятор МегаФон Деньги (Node.js).\n\n" +
-                 "Доступные команды:\n" +
-                 "👥 /users — Список кошельков\n" +
-                 "📝 /register <номер> <пароль> — Создать кошелек\n" +
-                 "💰 /add_money <номер> <сумма> — Начислить деньги\n" +
-                 "💳 /add_card <номер> <карта_16_цифр> [название] — Выдать карту";
-    bot.sendMessage(msg.chat.id, text);
-});
+let cachedCatalog = null;
+let catalogCacheId = "20121203175300398"; // Оригинальный ID из дампа МегаФона
 
-bot.onText(/\/register/, (msg) => {
-    const parts = msg.text.split(' ');
-    if (parts.length !== 3) return bot.sendMessage(msg.chat.id, "⚠️ Формат: /register 79260000000 123456");
-    
-    const phone = parts[1];
-    const password = parts[2];
-    
+if (fs.existsSync('catalog.txt')) {
     try {
-        const user = db.prepare('SELECT phone FROM users WHERE phone = ?').get(phone);
-        if (user) {
-            db.prepare('UPDATE users SET password = ? WHERE phone = ?').run(password, phone);
-            bot.sendMessage(msg.chat.id, `🔄 Пароль для ${phone} обновлен.`);
-        } else {
-            db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(phone, password, null, 1000.0);
-            bot.sendMessage(msg.chat.id, `✅ Кошелек ${phone} зарегистрирован!\nПароль: ${password}\nБаланс: 1000 руб.`);
-        }
+        cachedCatalog = JSON.parse(fs.readFileSync('catalog.txt', 'utf8'));
+        catalogCacheId = cachedCatalog.cache_id || catalogCacheId;
+        console.log("[+] Каталог услуг загружен в оперативную память сервера.");
     } catch (e) {
-        bot.sendMessage(msg.chat.id, `❌ Ошибка: ${e.message}`);
+        console.log("[!] Ошибка парсинга catalog.txt:", e.message);
     }
-});
-
-bot.onText(/\/users/, (msg) => {
-    const users = db.prepare('SELECT phone, password, balance FROM users').all();
-    if (users.length === 0) return bot.sendMessage(msg.chat.id, "Пользователей пока нет.");
-    
-    let text = "👥 Зарегистрированные кошельки:\n";
-    users.forEach(u => {
-        text += `📱 ${u.phone} | 🔑 ${u.password} | 💰 ${u.balance} руб.\n`;
-    });
-    bot.sendMessage(msg.chat.id, text);
-});
-
-bot.onText(/\/add_money/, (msg) => {
-    const parts = msg.text.split(' ');
-    if (parts.length < 3) return bot.sendMessage(msg.chat.id, "⚠️ Формат: /add_money 79260000000 500");
-    
-    const phone = parts[1];
-    const amount = parseFloat(parts[2]);
-    try {
-        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(amount, phone);
-        bot.sendMessage(msg.chat.id, `✅ Баланс ${phone} пополнен на ${amount} руб.`);
-    } catch (e) {
-        bot.sendMessage(msg.chat.id, "❌ Ошибка БД.");
-    }
-});
-
-bot.onText(/\/add_card/, (msg) => {
-    const parts = msg.text.split(' ');
-    if (parts.length < 3) return bot.sendMessage(msg.chat.id, "⚠️ Формат: /add_card 79260000000 4276111122223333 Зарплатная");
-    
-    const phone = parts[1];
-    const cardRaw = parts[2];
-    const alias = parts.length > 3 ? parts.slice(3).join(' ') : "Моя карта";
-    
-    let cardType = "MasterCard";
-    if (cardRaw.startsWith("4")) cardType = "VISA";
-    else if (cardRaw.startsWith("2")) cardType = "MIR";
-    
-    const cardMasked = cardRaw.length >= 12 ? `${cardRaw.substring(0, 4)} **** **** ${cardRaw.slice(-4)}` : cardRaw;
-    const cardId = "card_" + uuidv4().substring(0, 8);
-
-    try {
-        const user = db.prepare('SELECT phone FROM users WHERE phone = ?').get(phone);
-        if (!user) return bot.sendMessage(msg.chat.id, `❌ Кошелек ${phone} не найден!`);
-        
-        db.prepare('INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(phone, cardId, alias, cardMasked, "1", cardType);
-          
-        bot.sendMessage(msg.chat.id, `💳 Карта ${cardMasked} (${cardType}) выдана кошельку ${phone}!`);
-    } catch (e) {
-        bot.sendMessage(msg.chat.id, `❌ Ошибка: ${e.message}`);
-    }
-});
-
-console.log("[+] Telegram-бот запущен.");
+} else {
+    console.log("[!] ВНИМАНИЕ: Файл catalog.txt не найден!");
+}
 
 // ==========================================
-// 🌐 WEBVIEW (ФЕЙКОВЫЙ ПЛАТЕЖНЫЙ ШЛЮЗ)
-// ==========================================
-app.all('/fake_gateway', (req, res) => {
-    const payment_id = req.body.payment_id || req.query.payment_id || "TRX_TEST";
-    const amount = req.body.amount || req.query.amount || "0";
-
-    const html = `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Оплата картой</title>
-        <style>
-            body { font-family: Arial, sans-serif; text-align: center; background-color: #f4f4f4; padding: 20px; }
-            .card-box { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin-top: 30px; }
-            h2 { color: #00B956; }
-            .price { font-size: 24px; font-weight: bold; margin: 20px 0; }
-            .btn { background-color: #00B956; color: white; padding: 15px; width: 100%; border: none; border-radius: 5px; font-size: 18px; cursor: pointer; }
-            .input-fake { border: 1px solid #ccc; padding: 12px; margin-bottom: 10px; width: 90%; border-radius: 5px; background: #eee; color: #777; }
-        </style>
-    </head>
-    <body>
-        <div class="card-box">
-            <h2>🔒 Тестовый Эквайринг</h2>
-            <p>Заказ: ${payment_id}</p>
-            <div class="price">${amount} ₽</div>
-            <input type="text" class="input-fake" value="4276 0000 0000 0000" readonly>
-            <input type="text" class="input-fake" value="12/25" readonly style="width: 40%;">
-            <input type="text" class="input-fake" value="CVC" readonly style="width: 40%;">
-            <form action="/gateway_success" method="POST">
-                <input type="hidden" name="payment_id" value="${payment_id}">
-                <button type="submit" class="btn">Подтвердить оплату</button>
-            </form>
-        </div>
-    </body>
-    </html>`;
-    res.send(html);
-});
-
-app.post('/gateway_success', (req, res) => {
-    const payment_id = req.body.payment_id;
-    bot.sendMessage(ADMIN_CHAT_ID, `💳 ЭКВАЙРИНГ!\nПользователь подтвердил платеж ${payment_id} в окне WebView.`);
-    
-    const html = `
-    <html>
-    <head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-    <body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
-        <h2 style="color: #00B956;">✅ Операция выполнена</h2>
-        <p>Средства зачислены. Возвращаемся в приложение...</p>
-        <div style="margin-top: 30px; font-size: 40px;">💸</div>
-        <script>setTimeout(function(){ window.location.href = 'megafon://success'; }, 2000);</script>
-    </body>
-    </html>`;
-    res.send(html);
-});
-
-// ==========================================
-// 📞 EXPRESS (ЭМУЛЯТОР API МЕГАФОНА)
+// 📞 EXPRESS API МЕГАФОНА
 // ==========================================
 app.post('/api/odp', (req, res) => {
     const reqStr = req.body.request;
@@ -214,25 +91,28 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "error", text: "Invalid JSON" });
     }
 
-    console.log(`\n[>] ПРИШЕЛ ЗАПРОС:`, reqData);
-    
-    // 💡 Читаем правильный ключ "request"
     const action = reqData.request || reqData.method || reqData.action || "unknown";
     const sid = reqData.sid;
+    
+    // Не логируем спам-запросы, чтобы не засорять консоль
+    if (!["balance", "quick_balance", "balance_widget"].includes(action)) {
+        console.log(`\n[>] ПРИШЕЛ ЗАПРОС: [${action}]`);
+    }
 
     // --- 1. АВТОРИЗАЦИЯ И СМС ---
     if (action === "password_get" || action === "get_password") {
-        // Телефон лежит в msisdn
         const phone = reqData.msisdn || reqData.username || reqData.login || reqData.phone;
+        if (!phone) return res.json({ result: "error", text: "Нет номера" });
+
         const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
-        
         const user = db.prepare('SELECT phone FROM users WHERE phone = ?').get(phone);
+        
         if (user) {
             db.prepare('UPDATE users SET password = ? WHERE phone = ?').run(smsCode, phone);
         } else {
             db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(phone, smsCode, null, 1000.0);
         }
-        bot.sendMessage(ADMIN_CHAT_ID, `📩 СМС Код для входа!\nНомер: ${phone}\nКод: ${smsCode}\nТекст для авто-ввода: мегафон ${smsCode}`);
+        notifyAdmin(`📩 СМС Код для входа!\nНомер: ${phone}\nКод: ${smsCode}\nТекст для авто-ввода: мегафон ${smsCode}`);
         return res.json({ result: "ok" });
     }
 
@@ -240,52 +120,39 @@ app.post('/api/odp', (req, res) => {
         const phone = reqData.username || reqData.login || reqData.phone || reqData.msisdn || "";
         const password = reqData.password || reqData.pass || "";
         
-        // Авто-восстановление сессии (если приложение присылает пустой логин, но валидный sid)
+        // Авто-вход по живой сессии (если пароль и логин пустые)
         if (phone === "" && sid && sid !== "1") {
             const existingUser = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
             if (existingUser) {
-                bot.sendMessage(ADMIN_CHAT_ID, `🔄 Авто-вход по сессии: ${existingUser.phone}`);
                 return res.json({ result: "ok", sid: existingUser.sid, operator: "Мегафон", region: "100", autoupdate_time: 3600, request_logs: [] });
             } else {
                 return res.json({ result: "error", code: "401", text: "Сессия устарела" });
             }
         }
         
-        // Защита от пустых запросов
-        if (phone === "") {
-            return res.json({ result: "error", code: "401", text: "Необходима авторизация" });
-        }
+        if (phone === "") return res.json({ result: "error", code: "401", text: "Необходима авторизация" });
         
-        // Обычный вход по логину и паролю
         const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
-        
         if (!user) {
-             // Если аккаунта нет в БД - создаем "на лету" (удобно для тестов)
              db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(phone, password, null, 1000.0);
-             bot.sendMessage(ADMIN_CHAT_ID, `🆕 Создан новый профиль: ${phone}`);
+             notifyAdmin(`🆕 Создан профиль: ${phone}`);
         } else if (user.password !== password) {
             return res.json({ result: "error", code: "401", text: "Неверный пароль" });
         }
             
-        const newSid = uuidv4().replace(/-/g, '');
+        // ГЕНЕРАЦИЯ УНИКАЛЬНОГО SID 100% БЕЗ ПОВТОРОВ
+        const newSid = crypto.randomBytes(16).toString('hex');
         db.prepare('UPDATE users SET sid = ? WHERE phone = ?').run(newSid, phone);
-        bot.sendMessage(ADMIN_CHAT_ID, `🔓 Вход в кошелек: ${phone}`);
+        notifyAdmin(`🔓 Успешный вход: ${phone}`);
         
-        return res.json({ 
-            result: "ok", 
-            sid: newSid, 
-            operator: "Мегафон", 
-            region: "100", 
-            autoupdate_time: 3600, 
-            request_logs: [] 
-        });
+        return res.json({ result: "ok", sid: newSid, operator: "Мегафон", region: "100", autoupdate_time: 3600, request_logs: [] });
     }
 
     // --- 2. БАЛАНС И ПРОФИЛЬ ---
     if (["balance", "quick_balance", "balance_widget"].includes(action)) {
         const user = db.prepare('SELECT balance FROM users WHERE sid = ?').get(sid);
         if (user) return res.json({ result: "ok", balance: user.balance });
-        return res.json({ result: "error", code: "401", text: "Не авторизован" });
+        return res.json({ result: "error", code: "401" });
     }
 
     if (action === "get_msisdn") {
@@ -294,115 +161,18 @@ app.post('/api/odp', (req, res) => {
     }
 
     if (action === "get_profile") {
-        // Приложение ждало этот массив, поэтому зависало!
         const user = db.prepare('SELECT phone FROM users WHERE sid = ?').get(sid);
         return res.json({
             result: "ok",
-            profile: [{
-                code: "profile_1",
-                caption: "Мой профиль",
-                type: "user",
-                value: user ? user.phone : "Неизвестно",
-                list: []
-            }]
+            profile: [{ code: "profile_1", caption: "Мой профиль", type: "user", value: user ? user.phone : "Неизвестно", list: [] }]
         });
     }
 
     if (action === "offer_text" || action === "get_oferta") {
-        // Приложение жестко требует наличие полей offer_id и offer
-        return res.json({
-            result: "ok",
-            offer_id: "offer_v1",
-            offer: "Добро пожаловать в эмулятор МегаФон Деньги!"
-        });
+        return res.json({ result: "ok", offer_id: "v1", offer: "Добро пожаловать в эмулятор МегаФон Деньги!" });
     }
 
-    // --- 3. ИСТОРИЯ И СПИСКИ (Жизненно важно вернуть пустые массивы) ---
-    if (action === "transfer_history" || action === "card_history") {
-        return res.json({ result: "ok", transfers: [] });
-    }
-    
-    if (action === "favorites_list") {
-        return res.json({ result: "ok", favorites: [] });
-    }
-
-    if (action === "get_transfers_incoming" || action === "get_transfers_outgoing") {
-        return res.json({ result: "ok", count: "0", transfers: [] });
-    }
-
-    // --- 4. КАРТЫ ---
-    if (action === "card_list") {
-        const user = db.prepare('SELECT phone FROM users WHERE sid = ?').get(sid);
-        if (!user) return res.json({ result: "error", code: "401" });
-        const dbCards = db.prepare('SELECT * FROM cards WHERE phone = ?').all(user.phone);
-        return res.json({ result: "ok", cards: dbCards });
-    }
-
-    if (action === "fill_balance") {
-        const user = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
-        if (!user) return res.json({ result: "error", code: "401" });
-        
-        const amount = parseFloat(reqData.amount || 0);
-        const card_id = reqData.card_id || "unknown";
-        if (amount <= 0) return res.json({ result: "error", text: "Сумма <= 0" });
-        
-        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(amount, user.phone);
-        
-        const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
-        const info = db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time) VALUES (?, ?, ?, ?, ?)')
-                       .run(`CARD_${card_id}`, user.phone, amount, "ok", timeNow);
-                       
-        bot.sendMessage(ADMIN_CHAT_ID, `💳 ПОПОЛНЕНИЕ С КАРТЫ\nКошелек: ${user.phone}\nСумма: ${amount} руб.`);
-        return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
-    }
-
-    // --- 5. ЭКВАЙРИНГ И WEBVIEW ---
-    if (["transfer_init", "send_transfer_card", "link_card"].includes(action)) {
-        const amount = reqData.amount || "500";
-        const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
-        const acquirer_url = `http://${req.get('host')}/fake_gateway`;
-        return res.json({
-            result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url,
-            acquirer_post: { payment_id: transfer_id, amount: amount.toString(), description: "Оплата услуг" }
-        });
-    }
-
-    if (action === "transfer_result") {
-        return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok", error_message: "" });
-    }
-
-    // --- 6. КАТАЛОГИ ---
-    if (action === "transfer_terms") {
-        return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
-    }
-
-    if (action === "get_catalog" || action === "catalog_list") {
-        if (fs.existsSync('catalog.txt')) {
-            return res.json(JSON.parse(fs.readFileSync('catalog.txt', 'utf8')));
-        } else {
-            return res.json({ result: "error", text: "Файл catalog.txt не найден на сервере" });
-        }
-    }
-
-    if (["good_by_id", "good_from_by_id"].includes(action)) {
-        const good_id = reqData.good_id || reqData.goods_id;
-        const fileName = `good_${good_id}.txt`;
-        
-        if (fs.existsSync(fileName)) {
-            return res.json(JSON.parse(fs.readFileSync(fileName, 'utf8')));
-        } else {
-            console.log(`[!] Приложение запросило файл ${fileName}, но он не найден. Возвращаем заглушку.`);
-            return res.json({
-                result: "ok", good_id: good_id, name: "Неизвестная услуга",
-                fields: [
-                    { name: "account", description: "Лицевой счет", type: "text", required: "1" },
-                    { name: "sum", description: "Сумма", type: "text", required: "1" }
-                ]
-            });
-        }
-    }
-
-    // --- P2P ПЕРЕВОДЫ (Добавлен вниз) ---
+    // --- 3. P2P ПЕРЕВОДЫ ---
     if (action === "send_transfer_msisdn") {
         const sender = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
         const receiver_phone = reqData.receiver_phone || reqData.destination;
@@ -421,19 +191,166 @@ app.post('/api/odp', (req, res) => {
         const info = db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time) VALUES (?, ?, ?, ?, ?)')
                        .run(sender.phone, receiver_phone, amount, "ok", timeNow);
         
-        bot.sendMessage(ADMIN_CHAT_ID, `💸 ПЕРЕВОД!\nОт: ${sender.phone}\nКому: ${receiver_phone}\nСумма: ${amount} руб.`);
+        notifyAdmin(`💸 ПЕРЕВОД!\nОт: ${sender.phone}\nКому: ${receiver_phone}\nСумма: ${amount} руб.`);
         return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
     }
 
-    // --- Неизвестный метод ---
-    console.log(`[!] Неизвестный метод API: ${action}`);
+    // --- 4. КАРТЫ И ПОПОЛНЕНИЕ ---
+    if (action === "card_list") {
+        const user = db.prepare('SELECT phone FROM users WHERE sid = ?').get(sid);
+        if (!user) return res.json({ result: "error", code: "401" });
+        const dbCards = db.prepare('SELECT * FROM cards WHERE phone = ?').all(user.phone);
+        return res.json({ result: "ok", cards: dbCards });
+    }
+
+    if (action === "fill_balance") {
+        const user = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
+        if (!user) return res.json({ result: "error", code: "401" });
+        const amount = parseFloat(reqData.amount || 0);
+        const card_id = reqData.card_id || "unknown";
+        if (amount <= 0) return res.json({ result: "error", text: "Сумма <= 0" });
+        
+        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(amount, user.phone);
+        const info = db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time) VALUES (?, ?, ?, ?, ?)')
+                       .run(`CARD_${card_id}`, user.phone, amount, "ok", new Date().toISOString());
+                       
+        notifyAdmin(`💳 ПОПОЛНЕНИЕ С КАРТЫ\nКошелек: ${user.phone}\nСумма: ${amount} руб.`);
+        return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
+    }
+
+    // --- 5. КАТАЛОГИ УСЛУГ (БЫСТРАЯ ОТДАЧА) ---
+    if (action === "transfer_terms") {
+        return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
+    }
+
+    if (action === "get_catalog" || action === "catalog_list") {
+        // Если телефон просит кэш и он у нас совпадает, отдаем "cache", чтобы телефон не завис от парсинга!
+        if (reqData.cache_id === catalogCacheId) {
+            return res.json({ result: "cache" });
+        }
+        if (cachedCatalog) {
+            return res.json(cachedCatalog);
+        } else {
+            return res.json({ result: "error", text: "Каталог недоступен" });
+        }
+    }
+
+    // Читаем конкретную услугу АСИНХРОННО (чтобы не блокировать сервер)
+    if (["good_by_id", "good_from_by_id"].includes(action)) {
+        const good_id = reqData.good_id || reqData.goods_id;
+        const fileName = `good_${good_id}.txt`;
+        
+        fs.readFile(fileName, 'utf8', (err, data) => {
+            if (!err) {
+                try {
+                    return res.json(JSON.parse(data));
+                } catch(e) {}
+            }
+            return res.json({
+                result: "ok", good_id: good_id, name: "Неизвестная услуга",
+                fields: [
+                    { name: "account", description: "Лицевой счет", type: "text", required: "1" },
+                    { name: "sum", description: "Сумма", type: "text", required: "1" }
+                ]
+            });
+        });
+        return; // Важно: предотвращаем переход к заглушкам внизу
+    }
+
+    // --- 6. ЭКВАЙРИНГ И WEBVIEW ---
+    if (["transfer_init", "send_transfer_card", "link_card"].includes(action)) {
+        const amount = reqData.amount || "500";
+        const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
+        const acquirer_url = `http://${req.get('host')}/fake_gateway`;
+        return res.json({
+            result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url,
+            acquirer_post: { payment_id: transfer_id, amount: amount.toString(), description: "Оплата" }
+        });
+    }
+
+    if (action === "transfer_result") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok" });
+
+    // --- 7. ПУСТЫЕ МАССИВЫ (Чтобы UI не падал) ---
+    if (action === "transfer_history" || action === "card_history") return res.json({ result: "ok", transfers: [] });
+    if (action === "favorites_list") return res.json({ result: "ok", favorites: [] });
+    if (action === "get_transfers_incoming" || action === "get_transfers_outgoing") return res.json({ result: "ok", count: "0", transfers: [] });
+
+    // Неизвестные методы отбиваем безопасным "ok"
     return res.json({ result: "ok" });
 });
 
+// ==========================================
+// 🌐 WEBVIEW (ЭКВАЙРИНГ)
+// ==========================================
+app.all('/fake_gateway', (req, res) => {
+    const payment_id = req.body.payment_id || req.query.payment_id || "TRX_TEST";
+    const amount = req.body.amount || req.query.amount || "0";
+
+    res.send(`
+    <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>
+    body { font-family: Arial; text-align: center; background: #f4f4f4; padding: 20px; }
+    .card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+    .btn { background: #00B956; color: white; padding: 15px; width: 100%; border: none; border-radius: 5px; font-size: 18px; cursor: pointer; }
+    </style></head><body>
+        <div class="card">
+            <h2 style="color: #00B956;">🔒 Тестовый Эквайринг</h2>
+            <p>Заказ: ${payment_id}</p><h2>${amount} ₽</h2>
+            <form action="/gateway_success" method="POST">
+                <input type="hidden" name="payment_id" value="${payment_id}">
+                <button type="submit" class="btn">Подтвердить оплату</button>
+            </form>
+        </div>
+    </body></html>`);
+});
+
+app.post('/gateway_success', (req, res) => {
+    notifyAdmin(`💳 ЭКВАЙРИНГ!\nПользователь оплатил заказ ${req.body.payment_id}`);
+    res.send(`
+    <html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+    <body style="font-family: sans-serif; text-align: center; margin-top: 50px;">
+        <h2 style="color: green;">✅ Операция выполнена</h2><p>Возвращаемся в приложение...</p>
+        <script>setTimeout(function(){ window.location.href = 'megafon://success'; }, 2000);</script>
+    </body></html>`);
+});
+
+// ==========================================
+// 👑 ТЕЛЕГРАМ АДМИН-ПАНЕЛЬ
+// ==========================================
+bot.onText(/\/start|\/help/, (msg) => {
+    bot.sendMessage(msg.chat.id, "👑 ПАНЕЛЬ АДМИНИСТРАТОРА\n/users — Список кошельков\n/add_money <номер> <сумма>\n/add_card <номер> <карта>");
+});
+
+bot.onText(/\/users/, (msg) => {
+    if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+    const users = db.prepare('SELECT phone, password, balance FROM users').all();
+    if (!users.length) return bot.sendMessage(msg.chat.id, "Пусто.");
+    let text = "👥 Кошельки:\n";
+    users.forEach(u => text += `📱 ${u.phone} | 🔑 ${u.password} | 💰 ${u.balance} руб.\n`);
+    bot.sendMessage(msg.chat.id, text);
+});
+
+bot.onText(/\/add_money (.+) (.+)/, (msg, match) => {
+    if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+    try {
+        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(match[2]), match[1]);
+        bot.sendMessage(msg.chat.id, `✅ Баланс ${match[1]} пополнен на ${match[2]} руб.`);
+    } catch(e) { bot.sendMessage(msg.chat.id, "Ошибка"); }
+});
+
+bot.onText(/\/add_card (.+) (.+)/, (msg, match) => {
+    if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+    try {
+        const phone = match[1], cardRaw = match[2];
+        const cardMasked = cardRaw.length >= 12 ? `${cardRaw.substring(0,4)} **** **** ${cardRaw.slice(-4)}` : cardRaw;
+        const cardType = cardRaw.startsWith("4") ? "VISA" : "MasterCard";
+        
+        db.prepare('INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(phone, "card_" + crypto.randomBytes(4).toString('hex'), "Моя карта", cardMasked, "1", cardType);
+        bot.sendMessage(msg.chat.id, `💳 Карта ${cardMasked} привязана!`);
+    } catch(e) { bot.sendMessage(msg.chat.id, "Ошибка привязки"); }
+});
+
 // Запуск сервера
-if (!fs.existsSync('catalog.txt')) {
-    console.log("[!] ВНИМАНИЕ: Файл catalog.txt не найден! Раздел оплат может не загрузиться.");
-}
 app.listen(FLASK_PORT, '0.0.0.0', () => {
-    console.log(`[+] Сервер Express запущен на http://0.0.0.0:${FLASK_PORT}`);
+    console.log(`[+] Сервер запущен на порту ${FLASK_PORT}`);
 });
