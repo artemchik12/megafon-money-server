@@ -216,14 +216,14 @@ app.post('/api/odp', (req, res) => {
 
     console.log(`\n[>] ПРИШЕЛ ЗАПРОС:`, reqData);
     
-    // 🔥 ИСПРАВЛЕНИЕ 1: Приложение передает имя метода в ключе "request"
+    // 💡 Читаем правильный ключ "request"
     const action = reqData.request || reqData.method || reqData.action || "unknown";
     const sid = reqData.sid;
 
     // --- 1. АВТОРИЗАЦИЯ И СМС ---
-    if (action === "get_password") {
-        // 🔥 ИСПРАВЛЕНИЕ 2: Логин передается в username
-        const phone = reqData.username || reqData.login || reqData.phone;
+    if (action === "password_get" || action === "get_password") {
+        // Телефон лежит в msisdn
+        const phone = reqData.msisdn || reqData.username || reqData.login || reqData.phone;
         const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
         
         const user = db.prepare('SELECT phone FROM users WHERE phone = ?').get(phone);
@@ -237,15 +237,32 @@ app.post('/api/odp', (req, res) => {
     }
 
     if (action === "auth") {
-        const phone = reqData.username || reqData.login || reqData.phone;
-        const password = reqData.password || reqData.pass;
+        const phone = reqData.username || reqData.login || reqData.phone || reqData.msisdn || "";
+        const password = reqData.password || reqData.pass || "";
         
+        // Авто-восстановление сессии (если приложение присылает пустой логин, но валидный sid)
+        if (phone === "" && sid && sid !== "1") {
+            const existingUser = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
+            if (existingUser) {
+                bot.sendMessage(ADMIN_CHAT_ID, `🔄 Авто-вход по сессии: ${existingUser.phone}`);
+                return res.json({ result: "ok", sid: existingUser.sid, operator: "Мегафон", region: "100", autoupdate_time: 3600, request_logs: [] });
+            } else {
+                return res.json({ result: "error", code: "401", text: "Сессия устарела" });
+            }
+        }
+        
+        // Защита от пустых запросов
+        if (phone === "") {
+            return res.json({ result: "error", code: "401", text: "Необходима авторизация" });
+        }
+        
+        // Обычный вход по логину и паролю
         const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
         
-        // Авто-регистрация для теста (если аккаунт "testacc" из вашего лога не создан)
         if (!user) {
+             // Если аккаунта нет в БД - создаем "на лету" (удобно для тестов)
              db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(phone, password, null, 1000.0);
-             bot.sendMessage(ADMIN_CHAT_ID, `🆕 Авто-создан тестовый юзер: ${phone}`);
+             bot.sendMessage(ADMIN_CHAT_ID, `🆕 Создан новый профиль: ${phone}`);
         } else if (user.password !== password) {
             return res.json({ result: "error", code: "401", text: "Неверный пароль" });
         }
@@ -276,30 +293,44 @@ app.post('/api/odp', (req, res) => {
         return res.json(user ? { result: "ok", msisdn: user.phone } : { result: "error" });
     }
 
-    // --- 3. P2P ПЕРЕВОДЫ ---
-    if (action === "send_transfer_msisdn") {
-        const sender = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
-        const receiver_phone = reqData.receiver_phone || reqData.destination;
-        const amount = parseFloat(reqData.amount || 0);
-        
-        if (!sender) return res.json({ result: "error", code: "401", text: "Не авторизован" });
-        if (sender.balance < amount) return res.json({ result: "error", text: "Недостаточно средств" });
-        
-        const receiver = db.prepare('SELECT phone FROM users WHERE phone = ?').get(receiver_phone);
-        if (!receiver) return res.json({ result: "error", text: "Получатель не найден" });
-
-        db.prepare('UPDATE users SET balance = balance - ? WHERE phone = ?').run(amount, sender.phone);
-        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(amount, receiver_phone);
-        
-        const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
-        const info = db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time) VALUES (?, ?, ?, ?, ?)')
-                       .run(sender.phone, receiver_phone, amount, "ok", timeNow);
-        
-        bot.sendMessage(ADMIN_CHAT_ID, `💸 ПЕРЕВОД!\nОт: ${sender.phone}\nКому: ${receiver_phone}\nСумма: ${amount} руб.`);
-        return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
+    if (action === "get_profile") {
+        // Приложение ждало этот массив, поэтому зависало!
+        const user = db.prepare('SELECT phone FROM users WHERE sid = ?').get(sid);
+        return res.json({
+            result: "ok",
+            profile: [{
+                code: "profile_1",
+                caption: "Мой профиль",
+                type: "user",
+                value: user ? user.phone : "Неизвестно",
+                list: []
+            }]
+        });
     }
 
-    // --- 4. КАРТЫ И ПОПОЛНЕНИЕ ---
+    if (action === "offer_text" || action === "get_oferta") {
+        // Приложение жестко требует наличие полей offer_id и offer
+        return res.json({
+            result: "ok",
+            offer_id: "offer_v1",
+            offer: "Добро пожаловать в эмулятор МегаФон Деньги!"
+        });
+    }
+
+    // --- 3. ИСТОРИЯ И СПИСКИ (Жизненно важно вернуть пустые массивы) ---
+    if (action === "transfer_history" || action === "card_history") {
+        return res.json({ result: "ok", transfers: [] });
+    }
+    
+    if (action === "favorites_list") {
+        return res.json({ result: "ok", favorites: [] });
+    }
+
+    if (action === "get_transfers_incoming" || action === "get_transfers_outgoing") {
+        return res.json({ result: "ok", count: "0", transfers: [] });
+    }
+
+    // --- 4. КАРТЫ ---
     if (action === "card_list") {
         const user = db.prepare('SELECT phone FROM users WHERE sid = ?').get(sid);
         if (!user) return res.json({ result: "error", code: "401" });
@@ -345,7 +376,7 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
     }
 
-    if (action === "get_catalog") { // 🔥 ИСПРАВЛЕНИЕ: метод называется get_catalog
+    if (action === "get_catalog" || action === "catalog_list") {
         if (fs.existsSync('catalog.txt')) {
             return res.json(JSON.parse(fs.readFileSync('catalog.txt', 'utf8')));
         } else {
@@ -371,15 +402,27 @@ app.post('/api/odp', (req, res) => {
         }
     }
 
-    // --- 7. НОВЫЕ ЗАГЛУШКИ ДЛЯ ИСТОРИИ (чтобы не было unknown) ---
-    if (action === "favorites_list") {
-        return res.json({ result: "ok", favorites: [] });
-    }
-    if (action === "transfer_history" || action === "card_history") {
-        return res.json({ result: "ok", transfers: [] });
-    }
-    if (action === "get_transfers_incoming" || action === "get_transfers_outgoing") {
-        return res.json({ result: "ok", count: "0", transfers: [] });
+    // --- P2P ПЕРЕВОДЫ (Добавлен вниз) ---
+    if (action === "send_transfer_msisdn") {
+        const sender = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
+        const receiver_phone = reqData.receiver_phone || reqData.destination;
+        const amount = parseFloat(reqData.amount || 0);
+        
+        if (!sender) return res.json({ result: "error", code: "401", text: "Не авторизован" });
+        if (sender.balance < amount) return res.json({ result: "error", text: "Недостаточно средств" });
+        
+        const receiver = db.prepare('SELECT phone FROM users WHERE phone = ?').get(receiver_phone);
+        if (!receiver) return res.json({ result: "error", text: "Получатель не найден" });
+
+        db.prepare('UPDATE users SET balance = balance - ? WHERE phone = ?').run(amount, sender.phone);
+        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(amount, receiver_phone);
+        
+        const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const info = db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time) VALUES (?, ?, ?, ?, ?)')
+                       .run(sender.phone, receiver_phone, amount, "ok", timeNow);
+        
+        bot.sendMessage(ADMIN_CHAT_ID, `💸 ПЕРЕВОД!\nОт: ${sender.phone}\nКому: ${receiver_phone}\nСумма: ${amount} руб.`);
+        return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
     }
 
     // --- Неизвестный метод ---
