@@ -172,7 +172,7 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok", profile: [{ code: "profile_1", caption: "Мой профиль", type: "user", value: user ? user.phone : "Неизвестно", list: [] }]});
     }
 
-    if (action === "offer_text" || action === "get_oferta") return res.json({ result: "ok", offer_id: "v1", offer: "Добро пожаловать в эмулятор МегаФон Деньги!" });
+    if (action === "offer_text" || action === "get_oferta") return res.json({ result: "ok", offer_id: "v1", offer: "Добро пожаловать в эмулятор МегаФон Деньги!/n Все бесплатно пока не крашнется сервер или я забуду его оплатить,если что пишите в ТГ @minatosabaru " });
 
     // --- 3. P2P ПЕРЕВОДЫ ---
     if (action === "send_transfer_msisdn") {
