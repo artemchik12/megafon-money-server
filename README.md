@@ -22,6 +22,7 @@
 Оригинальное приложение «зашито» на боевые серверы. Чтобы заставить его работать с нашим эмулятором, необходимо перенаправить трафик.
 
 **Способ 1: Модификация APK (Рекомендуется)**
+0. [Скачайте](https://github.com/artemchik12/megafon-money-server/raw/refs/heads/main/%D0%94%D0%B5%D0%BD%D1%8C%D0%B3%D0%B8_1.1.0.apk) APK
 1. Декомпилируйте APK с помощью [Apktool](https://ibotpeaches.github.io/Apktool/):
    ```bash
    apktool d megafon.apk
