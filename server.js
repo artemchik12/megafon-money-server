@@ -14,6 +14,11 @@ const FLASK_PORT = 4444;
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use((req, res, next) => {
+    // Приказываем старому Android закрывать сокет и не использовать Pooling
+    res.setHeader('Connection', 'close');
+    next();
+});
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
