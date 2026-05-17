@@ -216,12 +216,14 @@ app.post('/api/odp', (req, res) => {
 
     console.log(`\n[>] ПРИШЕЛ ЗАПРОС:`, reqData);
     
-    const action = reqData.method || reqData.action || reqData.request_type || "unknown";
+    // 🔥 ИСПРАВЛЕНИЕ 1: Приложение передает имя метода в ключе "request"
+    const action = reqData.request || reqData.method || reqData.action || "unknown";
     const sid = reqData.sid;
 
     // --- 1. АВТОРИЗАЦИЯ И СМС ---
-    if (action === "mobstudio.mfexpress.get_password") {
-        const phone = reqData.login || reqData.phone;
+    if (action === "get_password") {
+        // 🔥 ИСПРАВЛЕНИЕ 2: Логин передается в username
+        const phone = reqData.username || reqData.login || reqData.phone;
         const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
         
         const user = db.prepare('SELECT phone FROM users WHERE phone = ?').get(phone);
@@ -234,35 +236,48 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok" });
     }
 
-    if (action === "mobstudio.mfexpress.auth") {
-        const phone = reqData.login || reqData.phone;
+    if (action === "auth") {
+        const phone = reqData.username || reqData.login || reqData.phone;
         const password = reqData.password || reqData.pass;
         
         const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
-        if (!user || user.password !== password) {
+        
+        // Авто-регистрация для теста (если аккаунт "testacc" из вашего лога не создан)
+        if (!user) {
+             db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(phone, password, null, 1000.0);
+             bot.sendMessage(ADMIN_CHAT_ID, `🆕 Авто-создан тестовый юзер: ${phone}`);
+        } else if (user.password !== password) {
             return res.json({ result: "error", code: "401", text: "Неверный пароль" });
         }
             
         const newSid = uuidv4().replace(/-/g, '');
         db.prepare('UPDATE users SET sid = ? WHERE phone = ?').run(newSid, phone);
         bot.sendMessage(ADMIN_CHAT_ID, `🔓 Вход в кошелек: ${phone}`);
-        return res.json({ result: "ok", sid: newSid, operator: "Мегафон", region: "100", autoupdate_time: 3600, request_logs: [] });
+        
+        return res.json({ 
+            result: "ok", 
+            sid: newSid, 
+            operator: "Мегафон", 
+            region: "100", 
+            autoupdate_time: 3600, 
+            request_logs: [] 
+        });
     }
 
     // --- 2. БАЛАНС И ПРОФИЛЬ ---
-    if (["mobstudio.mfexpress.balance", "mobstudio.mfexpress.quick_balance", "mobstudio.mfexpress.balance_widget"].includes(action)) {
+    if (["balance", "quick_balance", "balance_widget"].includes(action)) {
         const user = db.prepare('SELECT balance FROM users WHERE sid = ?').get(sid);
         if (user) return res.json({ result: "ok", balance: user.balance });
         return res.json({ result: "error", code: "401", text: "Не авторизован" });
     }
 
-    if (action === "mobstudio.mfexpress.get_msisdn") {
+    if (action === "get_msisdn") {
         const user = db.prepare('SELECT phone FROM users WHERE sid = ?').get(sid);
         return res.json(user ? { result: "ok", msisdn: user.phone } : { result: "error" });
     }
 
     // --- 3. P2P ПЕРЕВОДЫ ---
-    if (action === "mobstudio.mfexpress.send_transfer_msisdn") {
+    if (action === "send_transfer_msisdn") {
         const sender = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
         const receiver_phone = reqData.receiver_phone || reqData.destination;
         const amount = parseFloat(reqData.amount || 0);
@@ -285,14 +300,14 @@ app.post('/api/odp', (req, res) => {
     }
 
     // --- 4. КАРТЫ И ПОПОЛНЕНИЕ ---
-    if (action === "mobstudio.mfexpress.card_list") {
+    if (action === "card_list") {
         const user = db.prepare('SELECT phone FROM users WHERE sid = ?').get(sid);
         if (!user) return res.json({ result: "error", code: "401" });
         const dbCards = db.prepare('SELECT * FROM cards WHERE phone = ?').all(user.phone);
         return res.json({ result: "ok", cards: dbCards });
     }
 
-    if (action === "mobstudio.mfexpress.fill_balance") {
+    if (action === "fill_balance") {
         const user = db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
         if (!user) return res.json({ result: "error", code: "401" });
         
@@ -311,10 +326,9 @@ app.post('/api/odp', (req, res) => {
     }
 
     // --- 5. ЭКВАЙРИНГ И WEBVIEW ---
-    if (["mobstudio.mfexpress.transfer_init", "mobstudio.mfexpress.send_transfer_card", "mobstudio.mfexpress.link_card"].includes(action)) {
+    if (["transfer_init", "send_transfer_card", "link_card"].includes(action)) {
         const amount = reqData.amount || "500";
         const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
-        // Формируем динамический URL на основе IP сервера
         const acquirer_url = `http://${req.get('host')}/fake_gateway`;
         return res.json({
             result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url,
@@ -322,16 +336,16 @@ app.post('/api/odp', (req, res) => {
         });
     }
 
-    if (action === "mobstudio.mfexpress.transfer_result") {
+    if (action === "transfer_result") {
         return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok", error_message: "" });
     }
 
-    // --- 6. ЧТЕНИЕ КАТАЛОГА ИЗ TXT ФАЙЛОВ ---
-    if (action === "mobstudio.mfexpress.transfer_terms") {
+    // --- 6. КАТАЛОГИ ---
+    if (action === "transfer_terms") {
         return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
     }
 
-    if (action === "mobstudio.mfexpress.catalog_list") {
+    if (action === "get_catalog") { // 🔥 ИСПРАВЛЕНИЕ: метод называется get_catalog
         if (fs.existsSync('catalog.txt')) {
             return res.json(JSON.parse(fs.readFileSync('catalog.txt', 'utf8')));
         } else {
@@ -339,7 +353,7 @@ app.post('/api/odp', (req, res) => {
         }
     }
 
-    if (["mobstudio.mfexpress.good_by_id", "mobstudio.mfexpress.good_from_by_id"].includes(action)) {
+    if (["good_by_id", "good_from_by_id"].includes(action)) {
         const good_id = reqData.good_id || reqData.goods_id;
         const fileName = `good_${good_id}.txt`;
         
@@ -357,6 +371,17 @@ app.post('/api/odp', (req, res) => {
         }
     }
 
+    // --- 7. НОВЫЕ ЗАГЛУШКИ ДЛЯ ИСТОРИИ (чтобы не было unknown) ---
+    if (action === "favorites_list") {
+        return res.json({ result: "ok", favorites: [] });
+    }
+    if (action === "transfer_history" || action === "card_history") {
+        return res.json({ result: "ok", transfers: [] });
+    }
+    if (action === "get_transfers_incoming" || action === "get_transfers_outgoing") {
+        return res.json({ result: "ok", count: "0", transfers: [] });
+    }
+
     // --- Неизвестный метод ---
     console.log(`[!] Неизвестный метод API: ${action}`);
     return res.json({ result: "ok" });
@@ -366,6 +391,6 @@ app.post('/api/odp', (req, res) => {
 if (!fs.existsSync('catalog.txt')) {
     console.log("[!] ВНИМАНИЕ: Файл catalog.txt не найден! Раздел оплат может не загрузиться.");
 }
-app.listen(FLASK_PORT, '2.26.61.185', () => {
-    console.log(`[+] Сервер Express запущен на http://2.26.61.185:${FLASK_PORT}`);
+app.listen(FLASK_PORT, '0.0.0.0', () => {
+    console.log(`[+] Сервер Express запущен на http://0.0.0.0:${FLASK_PORT}`);
 });
