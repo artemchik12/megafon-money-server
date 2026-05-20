@@ -322,23 +322,20 @@ app.post('/api/odp', (req, res) => {
 
         const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
         
-        // 🧠 ОПРЕДЕЛЯЕМ, ЧТО ИМЕННО ДЕЛАЕТ ПОЛЬЗОВАТЕЛЬ С КАРТОЙ:
         let op_type = "topup_new_card";
-        let target = ""; // Сюда запишем телефон друга или ID услуги
+        let target = ""; 
 
         if (action === "link_card") {
             op_type = "link";
-        } else if (reqData.receiver_phone || reqData.destination) {
-            // Пользователь переводит деньги ДРУГУ с банковской карты
+        } else if (reqData.recipient || reqData.receiver_phone || reqData.destination) {
+            // 🔥 ИСПРАВЛЕНИЕ: Добавили чтение поля recipient!
             op_type = "p2p_card";
-            target = reqData.receiver_phone || reqData.destination;
+            target = reqData.recipient || reqData.receiver_phone || reqData.destination;
         } else if (reqData.good_id) {
-            // Пользователь оплачивает УСЛУГУ с банковской карты
             op_type = "pay_service_card";
             target = reqData.good_id;
         }
 
-        // Записываем ожидающую операцию (target временно сохраняем в колонку good_id)
         db.prepare('INSERT INTO pending_ops (transfer_id, phone, op_type, amount, good_id) VALUES (?, ?, ?, ?, ?)').run(transfer_id, user.phone, op_type, amount, target);
 
         const acquirer_url = `http://${req.get('host')}/fake_gateway`;
