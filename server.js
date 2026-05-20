@@ -153,25 +153,65 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok" });
     }
 
-    // --- 4. ИСТОРИЯ ПЛАТЕЖЕЙ (Исправлены форматы для Android) ---
-    if (action === "transfer_history" || action === "card_history" || action === "get_transfers_outgoing") {
+    // --- 4. ИСТОРИЯ ПЛАТЕЖЕЙ (Исправленные форматы) ---
+    
+    // История оплат услуг и пополнений (Недавние / Чеки)
+    if (["transfer_history", "card_history"].includes(action)) {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
-        const history = db.prepare("SELECT * FROM transfers WHERE sender_phone = ? ORDER BY id DESC LIMIT 50").all(user.phone);
+        const history = db.prepare("SELECT * FROM transfers WHERE sender_phone = ? OR receiver_phone = ? ORDER BY id DESC LIMIT 50").all(user.phone, user.phone);
         
         const formatHistory = history.map(t => ({
             transfer_id: t.id.toString(),
             bill_id: t.id.toString(),
             good_id: t.good_id || "service",
-            description: t.description || "Оплата услуг",
+            description: t.description || "Операция",
             datetime: t.date_time,
             date: t.date_time, 
-            amount: t.amount, // ВАЖНО: отдаем числом, как ждет Java
+            amount: t.amount, 
             status: t.status,
             status_message: "Успешно"
         }));
         return res.json({ result: "ok", count: formatHistory.length.toString(), transfers: formatHistory });
     }
+
+    // ИСХОДЯЩИЕ переводы (Кому я отправил P2P)
+    if (["get_transfers_outgoing", "remittance_outgoing"].includes(action)) {
+        const user = getUserBySid();
+        if (!user) return res.json({ result: "error", code: "401" });
+        // Ищем только переводы типа p2p, где мы отправители
+        const history = db.prepare("SELECT * FROM transfers WHERE sender_phone = ? AND type = 'p2p' ORDER BY id DESC LIMIT 50").all(user.phone);
+        
+        const formatHistory = history.map(t => ({
+            transfer_id: t.id.toString(),
+            amount: t.amount.toString(),
+            commission: "0",
+            date: t.date_time,
+            status: t.status,
+            status_date: t.date_time,
+            comment: t.description || "Перевод по номеру",
+            recipient: t.receiver_phone // <== ИМЕННО ЭТО ПОЛЕ ЖДАЛ ANDROID!
+        }));
+        return res.json({ result: "ok", count: formatHistory.length.toString(), transfers: formatHistory });
+    }
+
+    // ВХОДЯЩИЕ переводы (Кто мне прислал)
+    if (["get_transfers_incoming", "remittance_incoming", "remittance_incoming_update"].includes(action)) {
+        const user = getUserBySid();
+        if (!user) return res.json({ result: "error", code: "401" });
+        const history = db.prepare("SELECT * FROM transfers WHERE receiver_phone = ? ORDER BY id DESC LIMIT 50").all(user.phone);
+        
+        const formatHistory = history.map(t => ({ 
+            transfer_id: t.id.toString(), 
+            amount: t.amount.toString(), 
+            sender: t.sender_phone, 
+            status: t.status, 
+            status_date: t.date_time,
+            comment: t.description || "Входящий перевод"
+        }));
+        return res.json({ result: "ok", count: formatHistory.length.toString(), transfers: formatHistory });
+    }
+    
     if (action === "get_transfers_incoming") {
         const user = getUserBySid();
         const history = db.prepare("SELECT * FROM transfers WHERE receiver_phone = ? ORDER BY id DESC LIMIT 50").all(user.phone);
