@@ -276,7 +276,7 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url, acquirer_post: { payment_id: transfer_id, amount: amount.toString() }});
     }
 
-    if (action === "transfer_result") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok" });
+    if (action === "transfer_results") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok" });
 
     // --- 9. КАТАЛОГИ УСЛУГ ---
     if (action === "transfer_terms" || action === "get_transfer_terms") {
