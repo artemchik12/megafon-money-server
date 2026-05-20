@@ -279,7 +279,16 @@ app.post('/api/odp', (req, res) => {
     if (action === "transfer_result") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok" });
 
     // --- 9. КАТАЛОГИ УСЛУГ ---
-    if (action === "transfer_terms") return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
+    if (action === "transfer_terms" || action === "get_transfer_terms") {
+    return res.json({ 
+        result: "ok", 
+        comission: "0", 
+        min_amount: "1", 
+        max_amount: "15000", 
+        max_daily_amount: "50000", 
+        max_monthly_amount: "100000" 
+    });
+}
     if (action === "offer_text" || action === "get_oferta") return res.json({ result: "ok", offer_id: "v1", offer: "Добро пожаловать в эмулятор МегаФон Деньги!" });
 
     if (action === "get_catalog" || action === "catalog_list") {
