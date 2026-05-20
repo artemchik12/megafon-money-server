@@ -342,7 +342,16 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url, acquirer_post: { payment_id: transfer_id, amount: amount.toString() }});
     }
 
-    if (action === "transfer_results") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok" });
+    // Запрос статуса транзакции
+    if (action === "transfer_results") {
+        return res.json({ 
+            result: "ok", 
+            transfer_id: reqData.transfer_id || "", 
+            transfer_complete: "1", // 1 означает, что статус финальный (не нужно больше обновлять)
+            transfer_status: "ok", 
+            error_message: "Платеж успешно проведен!" 
+        });
+    }
 
     // --- 9. КАТАЛОГИ УСЛУГ ---
     if (action === "transfer_terms" || action === "get_transfer_terms") {
