@@ -228,25 +228,46 @@ app.post('/api/odp', (req, res) => {
     }
 
     // --- 5. ОПЛАТА УСЛУГ (С БАЛАНСА КОШЕЛЬКА) ---
-    // Ловим ВСЕ возможные названия метода оплаты!
     if (["transfer_add", "add_transfer", "pay_service", "pay", "transfer"].includes(action)) {
+        
+        // 🚨 ЛОВУШКА: Печатаем весь запрос в консоль!
+        console.log(`\n===========================================`);
+        console.log(`[🔎] РАСПАКОВКА ОПЛАТЫ УСЛУГ: ${action}`);
+        console.log(JSON.stringify(reqData, null, 2));
+        console.log(`===========================================\n`);
+
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        // Умный поиск суммы платежа (ищем везде)
+        // Умный поиск суммы платежа (ищем на поверхности)
         let amount = parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
-        if (amount <= 0) {
-            // Если сумма спрятана в JSON-строке внутри объекта
-            for (let key in reqData) {
-                if (typeof reqData[key] === 'string' && reqData[key].includes('"sum"')) {
-                    try {
-                        let parsed = JSON.parse(reqData[key]);
-                        if (parsed.sum) amount = parseFloat(parsed.sum);
-                        if (parsed.amount) amount = parseFloat(parsed.amount);
-                    } catch(e) {}
-                }
-            }
+        
+        // Если суммы нет на поверхности, ищем её внутри массива field_vals (где лежат поля формы)
+        if (amount <= 0 && Array.isArray(reqData.field_vals)) {
+            const sumField = reqData.field_vals.find(f => f.name === 'sum' || f.name === 'amount');
+            if (sumField) amount = parseFloat(sumField.value);
         }
+
+        // Защита от нулевой суммы
+        if (amount <= 0) {
+            return res.json({ result: "error", text: "Ошибка: Сервер не нашел сумму платежа. Посмотри консоль!" });
+        }
+
+        if (user.balance < amount) return res.json({ result: "error", text: "Недостаточно средств на балансе!" });
+
+        const good_id = reqData.good_id || "service";
+        
+        // Списываем баланс и записываем в историю
+        db.prepare('UPDATE users SET balance = balance - ? WHERE phone = ?').run(amount, user.phone);
+        
+        const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        const info = db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, good_id, description, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+                       .run(user.phone, 'SERVICE', amount, "ok", timeNow, good_id, "Оплата услуги", "service_pay");
+        
+        notifyAdmin(`🛒 ОПЛАТА УСЛУГ!\nКошелек: ${user.phone}\nУслуга: ${good_id}\nСумма: ${amount} руб.`);
+        
+        return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
+    }
 
         if (amount <= 0) return res.json({ result: "error", text: "Сумма не найдена сервером" });
         if (user.balance < amount) return res.json({ result: "error", text: "Недостаточно средств на балансе!" });
