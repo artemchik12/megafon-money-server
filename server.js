@@ -16,7 +16,6 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Отключаем Keep-Alive, чтобы Android не зависал
 app.use((req, res, next) => {
     res.setHeader('Connection', 'close');
     next();
@@ -150,7 +149,7 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         const name = reqData.name || "Мой шаблон";
         const good_id = reqData.good_id || "unknown";
-        const fields = JSON.stringify(reqData.field_vals || reqData.fields || []);
+        const fields = JSON.stringify(reqData.fields || reqData.field_vals || []);
         db.prepare('INSERT INTO favorites (phone, name, good_id, fields_json) VALUES (?, ?, ?, ?)').run(user.phone, name, good_id, fields);
         return res.json({ result: "ok" });
     }
@@ -183,36 +182,28 @@ app.post('/api/odp', (req, res) => {
     }
 
     // --- 5. ОПЛАТА УСЛУГ (С БАЛАНСА КОШЕЛЬКА) ---
-    if (["transfer_add", "add_transfer", "pay_service", "pay", "transfer"].includes(action)) {
-        console.log(`\n===========================================`);
-        console.log(`[🔎] РАСПАКОВКА ОПЛАТЫ УСЛУГ: ${action}`);
-        console.log(JSON.stringify(reqData, null, 2));
-        console.log(`===========================================\n`);
-
+    // 🔥 ИСПРАВЛЕНИЕ: Ловим transfer_init, если метод оплаты "megafon" (с баланса)
+    if (["transfer_add", "add_transfer", "pay_service", "pay", "transfer"].includes(action) || 
+       (action === "transfer_init" && reqData.method === "megafon")) {
+        
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        // Ищем сумму везде, где только можно
+        // Ищем сумму везде: amount, sum, в массиве fields или field_vals
         let amount = parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
-        if (amount <= 0 && Array.isArray(reqData.field_vals)) {
-            const sumField = reqData.field_vals.find(f => f.name === 'sum' || f.name === 'amount');
+        const fieldsArr = reqData.fields || reqData.field_vals;
+        
+        if (amount <= 0 && Array.isArray(fieldsArr)) {
+            const sumField = fieldsArr.find(f => f.name === 'sum' || f.name === 'amount');
             if (sumField) amount = parseFloat(sumField.value);
         }
-        if (amount <= 0) {
-            for (let key in reqData) {
-                if (typeof reqData[key] === 'string' && reqData[key].includes('"sum"')) {
-                    try {
-                        let parsed = JSON.parse(reqData[key]);
-                        if (parsed.sum) amount = parseFloat(parsed.sum);
-                    } catch(e) {}
-                }
-            }
-        }
 
-        if (amount <= 0) return res.json({ result: "error", text: "Ошибка: Сервер не нашел сумму платежа. Посмотри консоль!" });
+        if (amount <= 0) return res.json({ result: "error", text: "Ошибка: Сервер не нашел сумму платежа!" });
         if (user.balance < amount) return res.json({ result: "error", text: "Недостаточно средств на балансе!" });
 
-        const good_id = reqData.good_id || "service";
+        // ИСПРАВЛЕНИЕ: Берем goods_id
+        const good_id = reqData.goods_id || reqData.good_id || "service";
+        
         db.prepare('UPDATE users SET balance = balance - ? WHERE phone = ?').run(amount, user.phone);
         
         const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
@@ -269,18 +260,21 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
     }
 
-    // --- 8. ЭКВАЙРИНГ И WEBVIEW (Привязка, Пополнение, P2P с карты) ---
+    // --- 8. ЭКВАЙРИНГ И WEBVIEW (С новой карты) ---
+    // Если action == transfer_init дошел сюда, значит это НЕ баланс (method !== megafon)
     if (["transfer_init", "send_transfer_card", "link_card"].includes(action)) {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
         let amount = action === "link_card" ? 0 : parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
-        if (amount === 0 && Array.isArray(reqData.field_vals)) {
-            const sumField = reqData.field_vals.find(f => f.name === 'sum' || f.name === 'amount');
+        const fieldsArr = reqData.fields || reqData.field_vals;
+        if (amount === 0 && Array.isArray(fieldsArr)) {
+            const sumField = fieldsArr.find(f => f.name === 'sum' || f.name === 'amount');
             if (sumField) amount = parseFloat(sumField.value);
         }
 
         const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
+        
         let op_type = "topup_new_card";
         let target = ""; 
 
@@ -289,9 +283,9 @@ app.post('/api/odp', (req, res) => {
         } else if (reqData.recipient || reqData.receiver_phone || reqData.destination) {
             op_type = "p2p_card";
             target = reqData.recipient || reqData.receiver_phone || reqData.destination;
-        } else if (reqData.good_id) {
+        } else if (reqData.goods_id || reqData.good_id) {
             op_type = "pay_service_card";
-            target = reqData.good_id;
+            target = reqData.goods_id || reqData.good_id;
         }
 
         db.prepare('INSERT INTO pending_ops (transfer_id, phone, op_type, amount, good_id) VALUES (?, ?, ?, ?, ?)').run(transfer_id, user.phone, op_type, amount, target);
@@ -319,15 +313,12 @@ app.post('/api/odp', (req, res) => {
         return; 
     }
 
-    // --- 10. МЕТОДЫ ВЫВОДА СРЕДСТВ ---
+    // --- 10. ВЫВОД СРЕДСТВ ---
     if (action === "get_transfer_receive_methods") {
-        return res.json({
-            result: "ok",
-            methods: [
-                { method: "card", description: "Вывод на банковскую карту", fields: [{ name: "card_number", description: "Номер карты (16 цифр)", type: "number", limit: "16", required: "1" }] },
-                { method: "bank_account", description: "Вывод на банковский счет", fields: [{ name: "account_number", description: "Номер счета", type: "number", limit: "20", required: "1" }, { name: "bik", description: "БИК банка", type: "number", limit: "9", required: "1" }] }
-            ]
-        });
+        return res.json({ result: "ok", methods: [
+            { method: "card", description: "Вывод на карту", fields: [{ name: "card_number", description: "Номер карты", type: "number", limit: "16", required: "1" }] },
+            { method: "bank_account", description: "Вывод на счет", fields: [{ name: "account", description: "Номер счета", type: "number", limit: "20", required: "1" }, { name: "bik", description: "БИК", type: "number", limit: "9", required: "1" }] }
+        ]});
     }
 
     // =========================================================
