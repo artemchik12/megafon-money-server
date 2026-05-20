@@ -261,16 +261,37 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
     }
 
-    // --- 8. ЭКВАЙРИНГ И WEBVIEW (Привязка, Пополнение с новой) ---
+    // --- 8. ЭКВАЙРИНГ И WEBVIEW (Привязка, Пополнение, P2P с карты) ---
     if (["transfer_init", "send_transfer_card", "link_card"].includes(action)) {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        let amount = action === "link_card" ? 0 : parseFloat(reqData.amount || reqData.sum || 0);
+        let amount = action === "link_card" ? 0 : parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
+        if (amount === 0 && reqData.field_vals) {
+            const sumField = reqData.field_vals.find(f => f.name === 'sum' || f.name === 'amount');
+            if (sumField) amount = parseFloat(sumField.value);
+        }
+
         const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
         
-        const op_type = action === "link_card" ? "link" : "topup_new_card";
-        db.prepare('INSERT INTO pending_ops (transfer_id, phone, op_type, amount, good_id) VALUES (?, ?, ?, ?, ?)').run(transfer_id, user.phone, op_type, amount, "");
+        // 🧠 ОПРЕДЕЛЯЕМ, ЧТО ИМЕННО ДЕЛАЕТ ПОЛЬЗОВАТЕЛЬ С КАРТОЙ:
+        let op_type = "topup_new_card";
+        let target = ""; // Сюда запишем телефон друга или ID услуги
+
+        if (action === "link_card") {
+            op_type = "link";
+        } else if (reqData.receiver_phone || reqData.destination) {
+            // Пользователь переводит деньги ДРУГУ с банковской карты
+            op_type = "p2p_card";
+            target = reqData.receiver_phone || reqData.destination;
+        } else if (reqData.good_id) {
+            // Пользователь оплачивает УСЛУГУ с банковской карты
+            op_type = "pay_service_card";
+            target = reqData.good_id;
+        }
+
+        // Записываем ожидающую операцию (target временно сохраняем в колонку good_id)
+        db.prepare('INSERT INTO pending_ops (transfer_id, phone, op_type, amount, good_id) VALUES (?, ?, ?, ?, ?)').run(transfer_id, user.phone, op_type, amount, target);
 
         const acquirer_url = `http://${req.get('host')}/fake_gateway`;
         return res.json({ result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url, acquirer_post: { payment_id: transfer_id, amount: amount.toString() }});
@@ -333,14 +354,36 @@ app.post('/gateway_success', (req, res) => {
     
     if (op) {
         const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        
         if (op.op_type === "link") {
+            // Привязка карты
             const cardMasked = "4276 **** **** " + Math.floor(1000 + Math.random() * 9000);
             const cardId = "card_" + crypto.randomBytes(4).toString('hex');
-            db.prepare('INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) VALUES (?, ?, ?, ?, ?, ?)').run(op.phone, cardId, "Моя новая карта", cardMasked, "1", "VISA");
+            db.prepare('INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) VALUES (?, ?, ?, ?, ?, ?)').run(op.phone, cardId, "Новая карта", cardMasked, "1", "VISA");
+            notifyAdmin(`💳 Привязка карты через WebView: ${op.phone}`);
+            
         } else if (op.op_type === "topup_new_card") {
+            // Пополнение СВОЕГО кошелька
             db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(op.amount, op.phone);
-            db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, good_id, description, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run("BANK_CARD", op.phone, op.amount, "ok", timeNow, "topup", "Оплата через WebView", op.op_type);
+            db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, description, type) VALUES (?, ?, ?, ?, ?, ?, ?)').run("BANK_CARD", op.phone, op.amount, "ok", timeNow, "Пополнение с карты", "topup");
+            
+        } else if (op.op_type === "p2p_card") {
+            // Прямой перевод ДРУГУ с карты (баланс отправителя НЕ ТРОГАЕМ!)
+            const receiver_phone = op.good_id; // Мы хитро сохранили телефон получателя в эту колонку
+            
+            // Начисляем деньги получателю на кошелек
+            db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(op.amount, receiver_phone);
+            
+            // Пишем в историю как Исходящий P2P-перевод
+            db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, description, type) VALUES (?, ?, ?, ?, ?, ?, ?)').run(op.phone, receiver_phone, op.amount, "ok", timeNow, "Перевод с банк. карты", "p2p");
+            
+            notifyAdmin(`💸 P2P С КАРТЫ!\nОт: ${op.phone}\nКому: ${receiver_phone}\nСумма: ${op.amount} руб.`);
+            
+        } else if (op.op_type === "pay_service_card") {
+            // Оплата услуги напрямую с карты
+            db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, good_id, description, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(op.phone, "SERVICE", op.amount, "ok", timeNow, op.good_id, "Оплата услуги с карты", "service_pay");
         }
+
         db.prepare('DELETE FROM pending_ops WHERE transfer_id = ?').run(payment_id);
     }
 
