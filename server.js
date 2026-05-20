@@ -73,6 +73,14 @@ app.post('/api/odp', (req, res) => {
 
     const action = reqData.request || reqData.method || reqData.action || "unknown";
     const sid = reqData.sid;
+
+    // 🚨 СПЕЦИАЛЬНАЯ ЛОВУШКА ДЛЯ ПЕРЕВОДОВ С КАРТЫ
+    if (action === "transfer_init" || action === "send_transfer_card") {
+        console.log(`\n===========================================`);
+        console.log(`[🔎] РАСПАКОВКА ПЕРЕВОДА С КАРТЫ: ${action}`);
+        console.log(JSON.stringify(reqData, null, 2));
+        console.log(`===========================================\n`);
+    }
     
     // Вспомогательная функция
     const getUserBySid = () => db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
