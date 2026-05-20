@@ -16,7 +16,7 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Отключаем Keep-Alive, чтобы Android не зависал в тишине
+// Отключаем Keep-Alive, чтобы Android не зависал
 app.use((req, res, next) => {
     res.setHeader('Connection', 'close');
     next();
@@ -73,17 +73,11 @@ app.post('/api/odp', (req, res) => {
 
     const action = reqData.request || reqData.method || reqData.action || "unknown";
     const sid = reqData.sid;
-
-    // 🚨 СПЕЦИАЛЬНАЯ ЛОВУШКА ДЛЯ ПЕРЕВОДОВ С КАРТЫ
-    if (action === "transfer_init" || action === "send_transfer_card") {
-        console.log(`\n===========================================`);
-        console.log(`[🔎] РАСПАКОВКА ПЕРЕВОДА С КАРТЫ: ${action}`);
-        console.log(JSON.stringify(reqData, null, 2));
-        console.log(`===========================================\n`);
-    }
-    
-    // Вспомогательная функция
     const getUserBySid = () => db.prepare('SELECT * FROM users WHERE sid = ?').get(sid);
+
+    if (!["balance", "quick_balance", "balance_widget"].includes(action)) {
+        console.log(`\n[>] ЗАПРОС: [${action}]`);
+    }
 
     // --- 1. АВТОРИЗАЦИЯ И СМС ---
     if (action === "password_get" || action === "get_password") {
@@ -161,76 +155,35 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok" });
     }
 
-    // --- 4. ИСТОРИЯ ПЛАТЕЖЕЙ (Исправленные форматы) ---
-    
-    // История оплат услуг и пополнений (Недавние / Чеки)
+    // --- 4. ИСТОРИЯ ПЛАТЕЖЕЙ ---
     if (["transfer_history", "card_history"].includes(action)) {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
         const history = db.prepare("SELECT * FROM transfers WHERE sender_phone = ? OR receiver_phone = ? ORDER BY id DESC LIMIT 50").all(user.phone, user.phone);
         
         const formatHistory = history.map(t => ({
-            transfer_id: t.id.toString(),
-            bill_id: t.id.toString(),
-            good_id: t.good_id || "service",
-            description: t.description || "Операция",
-            datetime: t.date_time,
-            date: t.date_time, 
-            amount: t.amount, 
-            status: t.status,
-            status_message: "Успешно"
+            transfer_id: t.id.toString(), bill_id: t.id.toString(), good_id: t.good_id || "service", description: t.description || "Операция",
+            datetime: t.date_time, date: t.date_time, amount: t.amount, status: t.status, status_message: "Успешно"
         }));
         return res.json({ result: "ok", count: formatHistory.length.toString(), transfers: formatHistory });
     }
-
-    // ИСХОДЯЩИЕ переводы (Кому я отправил P2P)
     if (["get_transfers_outgoing", "remittance_outgoing"].includes(action)) {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
-        // Ищем только переводы типа p2p, где мы отправители
         const history = db.prepare("SELECT * FROM transfers WHERE sender_phone = ? AND type = 'p2p' ORDER BY id DESC LIMIT 50").all(user.phone);
-        
-        const formatHistory = history.map(t => ({
-            transfer_id: t.id.toString(),
-            amount: t.amount.toString(),
-            commission: "0",
-            date: t.date_time,
-            status: t.status,
-            status_date: t.date_time,
-            comment: t.description || "Перевод по номеру",
-            recipient: t.receiver_phone // <== ИМЕННО ЭТО ПОЛЕ ЖДАЛ ANDROID!
-        }));
+        const formatHistory = history.map(t => ({ transfer_id: t.id.toString(), amount: t.amount.toString(), commission: "0", date: t.date_time, status: t.status, status_date: t.date_time, comment: t.description || "Перевод по номеру", recipient: t.receiver_phone }));
         return res.json({ result: "ok", count: formatHistory.length.toString(), transfers: formatHistory });
     }
-
-    // ВХОДЯЩИЕ переводы (Кто мне прислал)
     if (["get_transfers_incoming", "remittance_incoming", "remittance_incoming_update"].includes(action)) {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
         const history = db.prepare("SELECT * FROM transfers WHERE receiver_phone = ? ORDER BY id DESC LIMIT 50").all(user.phone);
-        
-        const formatHistory = history.map(t => ({ 
-            transfer_id: t.id.toString(), 
-            amount: t.amount.toString(), 
-            sender: t.sender_phone, 
-            status: t.status, 
-            status_date: t.date_time,
-            comment: t.description || "Входящий перевод"
-        }));
-        return res.json({ result: "ok", count: formatHistory.length.toString(), transfers: formatHistory });
-    }
-    
-    if (action === "get_transfers_incoming") {
-        const user = getUserBySid();
-        const history = db.prepare("SELECT * FROM transfers WHERE receiver_phone = ? ORDER BY id DESC LIMIT 50").all(user.phone);
-        const formatHistory = history.map(t => ({ transfer_id: t.id.toString(), amount: t.amount, sender: t.sender_phone, status: t.status, status_date: t.date_time }));
+        const formatHistory = history.map(t => ({ transfer_id: t.id.toString(), amount: t.amount.toString(), sender: t.sender_phone, status: t.status, status_date: t.date_time, comment: t.description || "Входящий перевод" }));
         return res.json({ result: "ok", count: formatHistory.length.toString(), transfers: formatHistory });
     }
 
     // --- 5. ОПЛАТА УСЛУГ (С БАЛАНСА КОШЕЛЬКА) ---
     if (["transfer_add", "add_transfer", "pay_service", "pay", "transfer"].includes(action)) {
-        
-        // 🚨 ЛОВУШКА: Печатаем весь запрос в консоль!
         console.log(`\n===========================================`);
         console.log(`[🔎] РАСПАКОВКА ОПЛАТЫ УСЛУГ: ${action}`);
         console.log(JSON.stringify(reqData, null, 2));
@@ -239,25 +192,27 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        // Умный поиск суммы платежа (ищем на поверхности)
+        // Ищем сумму везде, где только можно
         let amount = parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
-        
-        // Если суммы нет на поверхности, ищем её внутри массива field_vals (где лежат поля формы)
         if (amount <= 0 && Array.isArray(reqData.field_vals)) {
             const sumField = reqData.field_vals.find(f => f.name === 'sum' || f.name === 'amount');
             if (sumField) amount = parseFloat(sumField.value);
         }
-
-        // Защита от нулевой суммы
         if (amount <= 0) {
-            return res.json({ result: "error", text: "Ошибка: Сервер не нашел сумму платежа. Посмотри консоль!" });
+            for (let key in reqData) {
+                if (typeof reqData[key] === 'string' && reqData[key].includes('"sum"')) {
+                    try {
+                        let parsed = JSON.parse(reqData[key]);
+                        if (parsed.sum) amount = parseFloat(parsed.sum);
+                    } catch(e) {}
+                }
+            }
         }
 
+        if (amount <= 0) return res.json({ result: "error", text: "Ошибка: Сервер не нашел сумму платежа. Посмотри консоль!" });
         if (user.balance < amount) return res.json({ result: "error", text: "Недостаточно средств на балансе!" });
 
         const good_id = reqData.good_id || "service";
-        
-        // Списываем баланс и записываем в историю
         db.prepare('UPDATE users SET balance = balance - ? WHERE phone = ?').run(amount, user.phone);
         
         const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
@@ -265,22 +220,6 @@ app.post('/api/odp', (req, res) => {
                        .run(user.phone, 'SERVICE', amount, "ok", timeNow, good_id, "Оплата услуги", "service_pay");
         
         notifyAdmin(`🛒 ОПЛАТА УСЛУГ!\nКошелек: ${user.phone}\nУслуга: ${good_id}\nСумма: ${amount} руб.`);
-        
-        return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
-    }
-
-        if (amount <= 0) return res.json({ result: "error", text: "Сумма не найдена сервером" });
-        if (user.balance < amount) return res.json({ result: "error", text: "Недостаточно средств на балансе!" });
-
-        const good_id = reqData.good_id || "service";
-        
-        // Списываем и записываем в историю
-        db.prepare('UPDATE users SET balance = balance - ? WHERE phone = ?').run(amount, user.phone);
-        const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
-        const info = db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, good_id, description, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-                       .run(user.phone, 'SERVICE', amount, "ok", timeNow, good_id, "Оплата услуги " + good_id, "service_pay");
-        
-        notifyAdmin(`🛒 ОПЛАТА!\nКошелек: ${user.phone}\nУслуга: ${good_id}\nСумма: ${amount} руб.`);
         return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
     }
 
@@ -316,7 +255,7 @@ app.post('/api/odp', (req, res) => {
         const dbCards = db.prepare('SELECT * FROM cards WHERE phone = ?').all(user.phone);
         return res.json({ result: "ok", cards: dbCards });
     }
-    if (action === "refill_balance") {
+    if (action === "fill_balance" || action === "refill_balance") {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
         const amount = parseFloat(reqData.amount || reqData.sum || 0);
@@ -336,20 +275,18 @@ app.post('/api/odp', (req, res) => {
         if (!user) return res.json({ result: "error", code: "401" });
 
         let amount = action === "link_card" ? 0 : parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
-        if (amount === 0 && reqData.field_vals) {
+        if (amount === 0 && Array.isArray(reqData.field_vals)) {
             const sumField = reqData.field_vals.find(f => f.name === 'sum' || f.name === 'amount');
             if (sumField) amount = parseFloat(sumField.value);
         }
 
         const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
-        
         let op_type = "topup_new_card";
         let target = ""; 
 
         if (action === "link_card") {
             op_type = "link";
         } else if (reqData.recipient || reqData.receiver_phone || reqData.destination) {
-            // 🔥 ИСПРАВЛЕНИЕ: Добавили чтение поля recipient!
             op_type = "p2p_card";
             target = reqData.recipient || reqData.receiver_phone || reqData.destination;
         } else if (reqData.good_id) {
@@ -358,33 +295,14 @@ app.post('/api/odp', (req, res) => {
         }
 
         db.prepare('INSERT INTO pending_ops (transfer_id, phone, op_type, amount, good_id) VALUES (?, ?, ?, ?, ?)').run(transfer_id, user.phone, op_type, amount, target);
-
         const acquirer_url = `http://${req.get('host')}/fake_gateway`;
         return res.json({ result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url, acquirer_post: { payment_id: transfer_id, amount: amount.toString() }});
     }
 
-    // Запрос статуса транзакции
-    if (action === "transfer_results") {
-        return res.json({ 
-            result: "ok", 
-            transfer_id: reqData.transfer_id || "", 
-            transfer_complete: "1", // 1 означает, что статус финальный (не нужно больше обновлять)
-            transfer_status: "ok", 
-            error_message: "Платеж успешно проведен!" 
-        });
-    }
+    if (action === "transfer_result") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok", error_message: "✅ Платеж успешно проведен!" });
 
     // --- 9. КАТАЛОГИ УСЛУГ ---
-    if (action === "transfer_terms" || action === "get_transfer_terms") {
-    return res.json({ 
-        result: "ok", 
-        comission: "0", 
-        min_amount: "1", 
-        max_amount: "15000", 
-        max_daily_amount: "50000", 
-        max_monthly_amount: "100000" 
-    });
-}
+    if (action === "transfer_terms" || action === "get_transfer_terms") return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
     if (action === "offer_text" || action === "get_oferta") return res.json({ result: "ok", offer_id: "v1", offer: "Добро пожаловать в эмулятор МегаФон Деньги!" });
 
     if (action === "get_catalog" || action === "catalog_list") {
@@ -401,16 +319,25 @@ app.post('/api/odp', (req, res) => {
         return; 
     }
 
+    // --- 10. МЕТОДЫ ВЫВОДА СРЕДСТВ ---
+    if (action === "get_transfer_receive_methods") {
+        return res.json({
+            result: "ok",
+            methods: [
+                { method: "card", description: "Вывод на банковскую карту", fields: [{ name: "card_number", description: "Номер карты (16 цифр)", type: "number", limit: "16", required: "1" }] },
+                { method: "bank_account", description: "Вывод на банковский счет", fields: [{ name: "account_number", description: "Номер счета", type: "number", limit: "20", required: "1" }, { name: "bik", description: "БИК банка", type: "number", limit: "9", required: "1" }] }
+            ]
+        });
+    }
+
     // =========================================================
-    // 🚨 ЛОВУШКА НЕИЗВЕСТНЫХ МЕТОДОВ (Если платеж не прошел)
+    // 🚨 ЛОВУШКА НЕИЗВЕСТНЫХ МЕТОДОВ
     // =========================================================
     console.log(`\n===========================================`);
     console.log(`[❌] НЕОБРАБОТАННЫЙ МЕТОД: ${action}`);
     console.log(`Данные:`, reqData);
     console.log(`===========================================\n`);
     
-    // Возвращаем ОШИБКУ, чтобы приложение показало её текст. 
-    // Так мы сразу увидим в приложении, какой метод оно реально вызвало!
     return res.json({ result: "error", text: `Метод ${action} не обработан сервером` });
 });
 
@@ -429,39 +356,21 @@ app.post('/gateway_success', (req, res) => {
     
     if (op) {
         const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
-        
         if (op.op_type === "link") {
-            // Привязка карты
             const cardMasked = "4276 **** **** " + Math.floor(1000 + Math.random() * 9000);
             const cardId = "card_" + crypto.randomBytes(4).toString('hex');
             db.prepare('INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) VALUES (?, ?, ?, ?, ?, ?)').run(op.phone, cardId, "Новая карта", cardMasked, "1", "VISA");
-            notifyAdmin(`💳 Привязка карты через WebView: ${op.phone}`);
-            
         } else if (op.op_type === "topup_new_card") {
-            // Пополнение СВОЕГО кошелька
             db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(op.amount, op.phone);
             db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, description, type) VALUES (?, ?, ?, ?, ?, ?, ?)').run("BANK_CARD", op.phone, op.amount, "ok", timeNow, "Пополнение с карты", "topup");
-            
         } else if (op.op_type === "p2p_card") {
-            // Прямой перевод ДРУГУ с карты (баланс отправителя НЕ ТРОГАЕМ!)
-            const receiver_phone = op.good_id; // Мы хитро сохранили телефон получателя в эту колонку
-            
-            // Начисляем деньги получателю на кошелек
-            db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(op.amount, receiver_phone);
-            
-            // Пишем в историю как Исходящий P2P-перевод
-            db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, description, type) VALUES (?, ?, ?, ?, ?, ?, ?)').run(op.phone, receiver_phone, op.amount, "ok", timeNow, "Перевод с банк. карты", "p2p");
-            
-            notifyAdmin(`💸 P2P С КАРТЫ!\nОт: ${op.phone}\nКому: ${receiver_phone}\nСумма: ${op.amount} руб.`);
-            
+            db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(op.amount, op.good_id);
+            db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, description, type) VALUES (?, ?, ?, ?, ?, ?, ?)').run(op.phone, op.good_id, op.amount, "ok", timeNow, "Перевод с банк. карты", "p2p");
         } else if (op.op_type === "pay_service_card") {
-            // Оплата услуги напрямую с карты
             db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, good_id, description, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(op.phone, "SERVICE", op.amount, "ok", timeNow, op.good_id, "Оплата услуги с карты", "service_pay");
         }
-
         db.prepare('DELETE FROM pending_ops WHERE transfer_id = ?').run(payment_id);
     }
-
     res.send(`<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="font-family: sans-serif; text-align: center; margin-top: 50px;"><h2 style="color: green;">✅ Операция выполнена</h2><p>Возвращаемся...</p><script>setTimeout(function(){ window.location.href = 'megafon://success'; }, 2000);</script></body></html>`);
 });
 
@@ -489,7 +398,7 @@ bot.onText(/\/register/, (msg) => {
             db.prepare('INSERT INTO users (phone, password, sms_code, sid, balance, tg_chat_id) VALUES (?, ?, NULL, NULL, ?, ?)').run(phone, password, 1000.0, tgChatId);
             bot.sendMessage(msg.chat.id, `✅ Кошелек ${phone} создан!\nВам начислено: 1000 руб.`);
         }
-    } catch(e) { bot.sendMessage(msg.chat.id, "Ошибка"); }
+    } catch(e) {}
 });
 
 bot.onText(/\/my_balance (.+)/, (msg, match) => {
@@ -499,7 +408,6 @@ bot.onText(/\/my_balance (.+)/, (msg, match) => {
     } catch(e) {}
 });
 
-// АДМИНСКИЕ КОМАНДЫ
 bot.onText(/\/users/, (msg) => {
     if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
     const users = db.prepare('SELECT phone, password, balance, tg_chat_id FROM users').all();
@@ -513,8 +421,8 @@ bot.onText(/\/add_money (.+) (.+)/, (msg, match) => {
     if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
     try {
         db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(match[2]), match[1]);
-        bot.sendMessage(msg.chat.id, `✅ Баланс ${match[1]} пополнен на ${match[2]} руб.`);
+        bot.sendMessage(msg.chat.id, `✅ Баланс ${match[1]} пополнен.`);
     } catch(e) {}
 });
 
-app.listen(FLASK_PORT, '0.0.0.0', () => { console.log(`[+] Сервер запущен на порту ${FLASK_PORT}`); });
+app.listen(FLASK_PORT, '2.26.61.185', () => { console.log(`[+] Сервер запущен на порту ${FLASK_PORT}`); });
