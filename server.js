@@ -247,7 +247,7 @@ app.post('/api/odp', (req, res) => {
         const dbCards = db.prepare('SELECT * FROM cards WHERE phone = ?').all(user.phone);
         return res.json({ result: "ok", cards: dbCards });
     }
-    if (action === "fill_balance") {
+    if (action === "refill_balance") {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
         const amount = parseFloat(reqData.amount || reqData.sum || 0);
