@@ -15,6 +15,7 @@ const FLASK_PORT = 4444;
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+app.use(express.static('public'));
 
 app.use((req, res, next) => {
     res.setHeader('Connection', 'close');
