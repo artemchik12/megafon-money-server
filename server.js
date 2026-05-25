@@ -321,7 +321,7 @@ app.post('/api/odp', (req, res) => {
     }
 
     // --- 11. СПИСОК РЕГИОНОВ ---
-    if (action === "get_regions" || action === "mobstudio.mfexpress.get_regions") {
+    if (action === "region_list" || action === "mobstudio.mfexpress.region_list") {
         return res.json({
             result: "ok",
             regions: [
