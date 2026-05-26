@@ -3,32 +3,49 @@ const Database = require('better-sqlite3');
 const TelegramBot = require('node-telegram-bot-api');
 const crypto = require('crypto');
 const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
 
 // ==========================================
-// ⚙️ НАСТРОЙКИ СЕРВЕРА
+// ⚙️ ЗАГРУЗКА ДИНАМИЧЕСКОЙ КОНФИГУРАЦИИ
 // ==========================================
-const BOT_TOKEN = "ВАШ_ТОКЕН_ОТ_BOTFATHER";
-const ADMIN_CHAT_ID = "ВАШ_CHAT_ID";
-const FLASK_PORT = 4444;
+let config = {
+    BOT_TOKEN: "ВАШ_ТОКЕН_ОТ_BOTFATHER",
+    ADMIN_CHAT_ID: "ВАШ_CHAT_ID",
+    PORT: 4444,
+    DATABASE_PATH: "wallet.db",
+    CATALOG_PATH: "catalog.txt"
+};
+
+if (fs.existsSync('config.json')) {
+    try {
+        const fileConfig = JSON.parse(fs.readFileSync('config.json', 'utf8'));
+        config = { ...config, ...fileConfig };
+        console.log("[+] Настройки успешно загружены из config.json");
+    } catch (e) {
+        console.log("[!] Ошибка чтения config.json, используются параметры по умолчанию:", e.message);
+    }
+} else {
+    // Автоматическое создание дефолтного конфига, если файла нет
+    fs.writeFileSync('config.json', JSON.stringify(config, null, 4), 'utf8');
+    console.log("[*] Создан стандартный файл конфигурации config.json. Пожалуйста, настройте его.");
+}
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Отключаем Keep-Alive, чтобы Android не зависал
+// Фикс зависаний сокетов старого Android
 app.use((req, res, next) => {
     res.setHeader('Connection', 'close');
     next();
 });
 
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
-function notifyAdmin(text) { bot.sendMessage(ADMIN_CHAT_ID, text).catch(() => {}); }
+const bot = new TelegramBot(config.BOT_TOKEN, { polling: true });
+function notifyAdmin(text) { 
+    bot.sendMessage(config.ADMIN_CHAT_ID, text).catch(() => {}); 
+}
 
-// ==========================================
-// 🗄 БАЗА ДАННЫХ SQLITE
-// ==========================================
-const db = new Database('wallet.db');
+// Инициализация базы данных по указанному пути
+const db = new Database(config.DATABASE_PATH);
 
 function initDb() {
     db.exec(`
