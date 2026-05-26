@@ -329,13 +329,77 @@ app.post('/api/odp', (req, res) => {
         return; 
     }
 
-    // --- 10. ВЫВОД СРЕДСТВ ---
+    // --- 10. МЕТОДЫ ВЫВОДА/ПОЛУЧЕНИЯ СРЕДСТВ (Оригинальный формат) ---
     if (action === "get_transfer_receive_methods") {
-        return res.json({ result: "ok", methods: [
-            { method: "card", description: "Вывод на карту", fields: [{ name: "card_number", description: "Номер карты", type: "number", limit: "16", required: "1" }] },
-            { method: "bank_account", description: "Вывод на счет", fields: [{ name: "account", description: "Номер счета", type: "number", limit: "20", required: "1" }, { name: "bik", description: "БИК", type: "number", limit: "9", required: "1" }] }
-        ]});
+        return res.json({
+            result: "ok",
+            methods: [
+                {
+                    description: "На счет телефона",
+                    method: "msisdn",
+                    fields: []
+                },
+                {
+                    description: "На банковскую карту",
+                    method: "card",
+                    fields: [
+                        {
+                            limit: 16,
+                            list: false,
+                            required: true,
+                            type: "text",
+                            regex: "/[0-9]{16}/",
+                            description: "Номер карты",
+                            name: "card"
+                        },
+                        {
+                            limit: 4,
+                            list: false,
+                            required: true,
+                            type: "text",
+                            regex: "/[0-9]{4}/",
+                            description: "Срок действия",
+                            name: "expiry"
+                        }
+                    ]
+                },
+                {
+                    description: "Наличными в отделениях Юнистрим",
+                    method: "unistream",
+                    fields: [
+                        {
+                            limit: 32,
+                            list: false,
+                            required: true,
+                            type: "text",
+                            regex: "/^([a-zA-Zа-яА-ЯёЁъЪ\\-]{1,32})$/u",
+                            description: "Фамилия",
+                            name: "lastname"
+                        },
+                        {
+                            limit: 32,
+                            list: false,
+                            required: true,
+                            type: "text",
+                            regex: "/^([a-zA-Zа-яА-ЯёЁъЪ]{1,32})$/u",
+                            description: "Имя",
+                            name: "firstname"
+                        },
+                        {
+                            limit: 32,
+                            list: false,
+                            required: true,
+                            type: "text",
+                            regex: "/^([a-zA-Zа-яА-ЯёЁъЪ\\s]{0,32})$/u",
+                            description: "Отчество",
+                            name: "middlename"
+                        }
+                    ]
+                }
+            ]
+        });
     }
+
 
     // --- 11. СПИСОК РЕГИОНОВ ---
     if (action === "region_list" || action === "mobstudio.mfexpress.region_list") {
