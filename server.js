@@ -329,7 +329,7 @@ app.post('/api/odp', (req, res) => {
         return; 
     }
 
-    // --- 10. МЕТОДЫ ВЫВОДА/ПОЛУЧЕНИЯ СРЕДСТВ (Оригинальный формат) ---
+     // --- 10. МЕТОДЫ ВЫВОДА/ПОЛУЧЕНИЯ СРЕДСТВ (Оригинальный формат) ---
     if (action === "get_transfer_receive_methods") {
         return res.json({
             result: "ok",
