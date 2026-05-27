@@ -44,6 +44,20 @@ function notifyAdmin(text) {
 }
 
 // ==========================================
+// 🔍 ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (Нормализатор)
+// ==========================================
+function normalizePhone(phone) {
+    if (!phone) return "";
+    // Оставляем только цифры
+    let cleaned = phone.toString().replace(/\D/g, '');
+    // Если номер начинается с 8 и его длина 11 цифр, заменяем 8 на 7
+    if (cleaned.length === 11 && cleaned.startsWith('8')) {
+        cleaned = '7' + cleaned.substring(1);
+    }
+    return cleaned;
+}
+
+// ==========================================
 // 🗄 БАЗА ДАННЫХ SQLITE
 // ==========================================
 const db = new Database(config.DATABASE_PATH);
@@ -101,7 +115,11 @@ app.post('/api/odp', (req, res) => {
 
     // --- 1. АВТОРИЗАЦИЯ И СМС ---
     if (action === "password_get" || action === "get_password") {
-        const phone = reqData.msisdn || reqData.username || reqData.login || reqData.phone;
+        const rawPhone = reqData.msisdn || reqData.username || reqData.login || reqData.phone;
+        const phone = normalizePhone(rawPhone);
+        
+        if (!phone) return res.json({ result: "error", text: "Не указан номер" });
+        
         const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
         const user = db.prepare('SELECT phone, tg_chat_id FROM users WHERE phone = ?').get(phone);
         
@@ -115,7 +133,8 @@ app.post('/api/odp', (req, res) => {
     }
 
     if (action === "auth") {
-        const phone = reqData.username || reqData.login || reqData.phone || reqData.msisdn || "";
+        const rawPhone = reqData.username || reqData.login || reqData.phone || reqData.msisdn || "";
+        const phone = normalizePhone(rawPhone);
         const password = reqData.password || reqData.pass || "";
         
         if (phone === "" && sid && sid !== "1") {
@@ -209,7 +228,6 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        // Конвертация из копеек в рубли
         let amount = 0;
         if (reqData.amount) {
             amount = parseFloat(reqData.amount) / 100;
@@ -242,9 +260,8 @@ app.post('/api/odp', (req, res) => {
     // --- 6. P2P ПЕРЕВОДЫ (С БАЛАНСА КОШЕЛЬКА) ---
     if (action === "send_transfer_msisdn") {
         const sender = getUserBySid();
-        const receiver_phone = reqData.receiver_phone || reqData.destination;
+        const receiver_phone = normalizePhone(reqData.receiver_phone || reqData.destination);
         
-        // 🔥 ИСПРАВЛЕНИЕ: Конвертация из копеек в рубли
         let amount = 0;
         if (reqData.amount) {
             amount = parseFloat(reqData.amount) / 100;
@@ -255,8 +272,14 @@ app.post('/api/odp', (req, res) => {
         if (!sender) return res.json({ result: "error", code: "401" });
         if (sender.balance < amount) return res.json({ result: "error", text: "Недостаточно средств" });
         
-        const receiver = db.prepare('SELECT phone, tg_chat_id FROM users WHERE phone = ?').get(receiver_phone);
-        if (!receiver) return res.json({ result: "error", text: "Получатель не найден" });
+        let receiver = db.prepare('SELECT phone, tg_chat_id FROM users WHERE phone = ?').get(receiver_phone);
+        
+        // 🔥 УЛУЧШЕНИЕ: Авто-создание получателя перевода "на лету"
+        if (!receiver) {
+            db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(receiver_phone, '', null, 0.0);
+            receiver = { phone: receiver_phone, tg_chat_id: null };
+            notifyAdmin(`🔔 Авто-создан новый профиль для получателя перевода: ${receiver_phone}`);
+        }
 
         db.prepare('UPDATE users SET balance = balance - ? WHERE phone = ?').run(amount, sender.phone);
         db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(amount, receiver_phone);
@@ -282,7 +305,6 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
         
-        // 🔥 ИСПРАВЛЕНИЕ: Конвертация из копеек в рубли
         let amount = 0;
         if (reqData.amount) {
             amount = parseFloat(reqData.amount) / 100;
@@ -305,7 +327,6 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        // 🔥 ИСПРАВЛЕНИЕ: Конвертация из копеек в рубли
         let amount = 0;
         if (action !== "link_card") {
             if (reqData.amount) {
@@ -331,7 +352,8 @@ app.post('/api/odp', (req, res) => {
             op_type = "link";
         } else if (reqData.recipient || reqData.receiver_phone || reqData.destination) {
             op_type = "p2p_card";
-            target = reqData.recipient || reqData.receiver_phone || reqData.destination;
+            // Нормализуем телефон получателя при переводе с карты
+            target = normalizePhone(reqData.recipient || reqData.receiver_phone || reqData.destination);
         } else if (reqData.goods_id || reqData.good_id) {
             op_type = "pay_service_card";
             target = reqData.goods_id || reqData.good_id;
@@ -472,8 +494,20 @@ app.post('/gateway_success', (req, res) => {
             db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(op.amount, op.phone);
             db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, description, type) VALUES (?, ?, ?, ?, ?, ?, ?)').run("BANK_CARD", op.phone, op.amount, "ok", timeNow, "Пополнение с карты", "topup");
         } else if (op.op_type === "p2p_card") {
-            db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(op.amount, op.good_id);
-            db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, description, type) VALUES (?, ?, ?, ?, ?, ?, ?)').run(op.phone, op.good_id, op.amount, "ok", timeNow, "Перевод с банк. карты", "p2p");
+            const receiver_phone = op.good_id;
+            
+            // 🔥 УЛУЧШЕНИЕ: Авто-создание получателя перевода с карты, если его нет в базе
+            const receiverExists = db.prepare('SELECT phone FROM users WHERE phone = ?').get(receiver_phone);
+            if (!receiverExists) {
+                db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(receiver_phone, '', null, 0.0);
+                notifyAdmin(`🔔 Авто-создан кошелек получателя при переводе с карты: ${receiver_phone}`);
+            }
+
+            db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(op.amount, receiver_phone);
+            db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, description, type) VALUES (?, ?, ?, ?, ?, ?, ?)').run(op.phone, receiver_phone, op.amount, "ok", timeNow, "Перевод с банк. карты", "p2p");
+            
+            const receiver = db.prepare('SELECT tg_chat_id FROM users WHERE phone = ?').get(receiver_phone);
+            if (receiver && receiver.tg_chat_id) bot.sendMessage(receiver.tg_chat_id, `💸 ВАМ ПЕРЕВОД С КАРТЫ!\nОт: ${op.phone}\nСумма: ${op.amount} руб.`).catch(()=>{});
         } else if (op.op_type === "pay_service_card") {
             db.prepare('INSERT INTO transfers (sender_phone, receiver_phone, amount, status, date_time, good_id, description, type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(op.phone, "SERVICE", op.amount, "ok", timeNow, op.good_id, "Оплата услуги с карты", "service_pay");
         }
@@ -496,7 +530,7 @@ bot.onText(/\/start|\/help/, (msg) => {
 bot.onText(/\/register/, (msg) => {
     const parts = msg.text.split(' ');
     if (parts.length !== 3) return bot.sendMessage(msg.chat.id, "⚠️ Формат: /register 79260000000 123456");
-    const phone = parts[1], password = parts[2], tgChatId = msg.chat.id.toString();
+    const phone = normalizePhone(parts[1]), password = parts[2], tgChatId = msg.chat.id.toString();
     try {
         const user = db.prepare('SELECT phone FROM users WHERE phone = ?').get(phone);
         if (user) {
@@ -511,7 +545,8 @@ bot.onText(/\/register/, (msg) => {
 
 bot.onText(/\/my_balance (.+)/, (msg, match) => {
     try {
-        const user = db.prepare('SELECT balance, tg_chat_id FROM users WHERE phone = ?').get(match[1]);
+        const phone = normalizePhone(match[1]);
+        const user = db.prepare('SELECT balance, tg_chat_id FROM users WHERE phone = ?').get(phone);
         if (user && user.tg_chat_id === msg.chat.id.toString()) bot.sendMessage(msg.chat.id, `💰 Баланс: ${user.balance} руб.`);
     } catch(e) {}
 });
@@ -528,7 +563,8 @@ bot.onText(/\/users/, (msg) => {
 bot.onText(/\/add_money (.+) (.+)/, (msg, match) => {
     if (msg.from.id.toString() !== config.ADMIN_CHAT_ID.toString()) return;
     try {
-        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(match[2]), match[1]);
+        const phone = normalizePhone(match[1]);
+        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(match[2]), phone);
         bot.sendMessage(msg.chat.id, `✅ Баланс ${match[1]} пополнен.`);
     } catch(e) {}
 });
@@ -561,7 +597,8 @@ app.get('/api/admin/users', (req, res) => {
 app.post('/api/admin/add_money', (req, res) => {
     const { phone, amount } = req.body;
     try {
-        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(amount), phone);
+        const normPhone = normalizePhone(phone);
+        db.prepare('UPDATE users SET balance = balance + ? WHERE phone = ?').run(parseFloat(amount), normPhone);
         res.json({ result: 'ok' });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -569,6 +606,7 @@ app.post('/api/admin/add_money', (req, res) => {
 app.post('/api/admin/add_card', (req, res) => {
     const { phone, card_number, alias } = req.body;
     try {
+        const normPhone = normalizePhone(phone);
         let cardType = "MasterCard";
         if (card_number.startsWith("4")) cardType = "VISA";
         else if (card_number.startsWith("2")) cardType = "MIR";
@@ -577,7 +615,7 @@ app.post('/api/admin/add_card', (req, res) => {
         const cardId = "card_" + crypto.randomBytes(4).toString('hex');
         
         db.prepare('INSERT INTO cards (phone, card_id, alias, card_number, acquirer_id, card_type) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(phone, cardId, alias || "Новая карта", cardMasked, "1", cardType);
+          .run(normPhone, cardId, alias || "Новая карта", cardMasked, "1", cardType);
         res.json({ result: 'ok' });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
