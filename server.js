@@ -44,17 +44,33 @@ function notifyAdmin(text) {
 }
 
 // ==========================================
-// 🔍 ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (Нормализатор)
+// 🔍 ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ (Нормализатор и Парсер)
 // ==========================================
 function normalizePhone(phone) {
     if (!phone) return "";
-    // Оставляем только цифры
     let cleaned = phone.toString().replace(/\D/g, '');
-    // Если номер начинается с 8 и его длина 11 цифр, заменяем 8 на 7
     if (cleaned.length === 11 && cleaned.startsWith('8')) {
         cleaned = '7' + cleaned.substring(1);
     }
     return cleaned;
+}
+
+function extractRecipient(reqData) {
+    let phone = reqData.recipient || reqData.receiver_phone || reqData.destination || reqData.account || "";
+    if (phone === "") {
+        const fieldsArr = reqData.fields || reqData.field_vals;
+        if (Array.isArray(fieldsArr)) {
+            const phoneField = fieldsArr.find(f => 
+                f.name === 'account' || 
+                f.name === 'phone' || 
+                f.name === 'destination' || 
+                f.name === 'receiver_phone' || 
+                f.name === 'recipient'
+            );
+            if (phoneField) phone = phoneField.value;
+        }
+    }
+    return normalizePhone(phone);
 }
 
 // ==========================================
@@ -228,14 +244,8 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        let amount = 0;
-        if (reqData.amount) {
-            amount = parseFloat(reqData.amount) / 100;
-        } else if (reqData.sum) {
-            amount = parseFloat(reqData.sum);
-        } else if (reqData.request_amount) {
-            amount = parseFloat(reqData.request_amount) / 100;
-        }
+        // Читаем сумму напрямую в рублях
+        let amount = parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
 
         const fieldsArr = reqData.fields || reqData.field_vals;
         if (amount <= 0 && Array.isArray(fieldsArr)) {
@@ -260,21 +270,17 @@ app.post('/api/odp', (req, res) => {
     // --- 6. P2P ПЕРЕВОДЫ (С БАЛАНСА КОШЕЛЬКА) ---
     if (action === "send_transfer_msisdn") {
         const sender = getUserBySid();
-        const receiver_phone = normalizePhone(reqData.receiver_phone || reqData.destination);
+        const receiver_phone = extractRecipient(reqData);
         
-        let amount = 0;
-        if (reqData.amount) {
-            amount = parseFloat(reqData.amount) / 100;
-        } else if (reqData.sum) {
-            amount = parseFloat(reqData.sum);
-        }
+        // Читаем сумму напрямую в рублях
+        let amount = parseFloat(reqData.amount || reqData.sum || 0);
         
         if (!sender) return res.json({ result: "error", code: "401" });
+        if (receiver_phone === "") return res.json({ result: "error", text: "Не указан получатель платежа" });
         if (sender.balance < amount) return res.json({ result: "error", text: "Недостаточно средств" });
         
         let receiver = db.prepare('SELECT phone, tg_chat_id FROM users WHERE phone = ?').get(receiver_phone);
         
-        // 🔥 УЛУЧШЕНИЕ: Авто-создание получателя перевода "на лету"
         if (!receiver) {
             db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(receiver_phone, '', null, 0.0);
             receiver = { phone: receiver_phone, tg_chat_id: null };
@@ -305,12 +311,8 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
         
-        let amount = 0;
-        if (reqData.amount) {
-            amount = parseFloat(reqData.amount) / 100;
-        } else if (reqData.sum) {
-            amount = parseFloat(reqData.sum);
-        }
+        // Читаем сумму напрямую в рублях
+        let amount = parseFloat(reqData.amount || reqData.sum || 0);
 
         if (amount <= 0) return res.json({ result: "error", text: "Сумма <= 0" });
         
@@ -327,21 +329,13 @@ app.post('/api/odp', (req, res) => {
         const user = getUserBySid();
         if (!user) return res.json({ result: "error", code: "401" });
 
-        let amount = 0;
-        if (action !== "link_card") {
-            if (reqData.amount) {
-                amount = parseFloat(reqData.amount) / 100;
-            } else if (reqData.sum) {
-                amount = parseFloat(reqData.sum);
-            } else if (reqData.request_amount) {
-                amount = parseFloat(reqData.request_amount) / 100;
-            }
-            
-            const fieldsArr = reqData.fields || reqData.field_vals;
-            if (amount === 0 && Array.isArray(fieldsArr)) {
-                const sumField = fieldsArr.find(f => f.name === 'sum' || f.name === 'amount');
-                if (sumField) amount = parseFloat(sumField.value);
-            }
+        // Читаем сумму напрямую в рублях
+        let amount = action === "link_card" ? 0 : parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
+        
+        const fieldsArr = reqData.fields || reqData.field_vals;
+        if (amount === 0 && Array.isArray(fieldsArr)) {
+            const sumField = fieldsArr.find(f => f.name === 'sum' || f.name === 'amount');
+            if (sumField) amount = parseFloat(sumField.value);
         }
 
         const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
@@ -350,13 +344,15 @@ app.post('/api/odp', (req, res) => {
 
         if (action === "link_card") {
             op_type = "link";
-        } else if (reqData.recipient || reqData.receiver_phone || reqData.destination) {
-            op_type = "p2p_card";
-            // Нормализуем телефон получателя при переводе с карты
-            target = normalizePhone(reqData.recipient || reqData.receiver_phone || reqData.destination);
-        } else if (reqData.goods_id || reqData.good_id) {
-            op_type = "pay_service_card";
-            target = reqData.goods_id || reqData.good_id;
+        } else {
+            const extracted = extractRecipient(reqData);
+            if (extracted !== "") {
+                op_type = "p2p_card";
+                target = extracted;
+            } else if (reqData.goods_id || reqData.good_id) {
+                op_type = "pay_service_card";
+                target = reqData.goods_id || reqData.good_id;
+            }
         }
 
         db.prepare('INSERT INTO pending_ops (transfer_id, phone, op_type, amount, good_id) VALUES (?, ?, ?, ?, ?)').run(transfer_id, user.phone, op_type, amount, target);
@@ -477,7 +473,7 @@ app.post('/api/odp', (req, res) => {
 app.all('/fake_gateway', (req, res) => {
     const payment_id = req.body.payment_id || req.query.payment_id || "TRX_TEST";
     const amount = req.body.amount || req.query.amount || "0";
-    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body { font-family: Arial; text-align: center; padding: 20px; } .card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); } .btn { background: #00B956; color: white; padding: 15px; width: 100%; border: none; border-radius: 5px; font-size: 18px; cursor: pointer; }</style></head><body><div class="card"><h2 style="color: #00B956;">🔒 Тестовый Эквайринг</h2><p>Транзакция: ${payment_id}</p><h2>${amount > 0 ? (parseFloat(amount)/100) + ' ₽' : 'Привязка карты'}</h2><form action="/gateway_success" method="POST"><input type="hidden" name="payment_id" value="${payment_id}"><button type="submit" class="btn">Подтвердить</button></form></div></body></html>`);
+    res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body { font-family: Arial; text-align: center; padding: 20px; } .card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); } .btn { background: #00B956; color: white; padding: 15px; width: 100%; border: none; border-radius: 5px; font-size: 18px; cursor: pointer; }</style></head><body><div class="card"><h2 style="color: #00B956;">🔒 Тестовый Эквайринг</h2><p>Транзакция: ${payment_id}</p><h2>${amount > 0 ? amount + ' ₽' : 'Привязка карты'}</h2><form action="/gateway_success" method="POST"><input type="hidden" name="payment_id" value="${payment_id}"><button type="submit" class="btn">Подтвердить</button></form></div></body></html>`);
 });
 
 app.post('/gateway_success', (req, res) => {
@@ -496,7 +492,7 @@ app.post('/gateway_success', (req, res) => {
         } else if (op.op_type === "p2p_card") {
             const receiver_phone = op.good_id;
             
-            // 🔥 УЛУЧШЕНИЕ: Авто-создание получателя перевода с карты, если его нет в базе
+            // Проверка и создание получателя при переводе с карты
             const receiverExists = db.prepare('SELECT phone FROM users WHERE phone = ?').get(receiver_phone);
             if (!receiverExists) {
                 db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(receiver_phone, '', null, 0.0);
@@ -775,5 +771,16 @@ app.get('/admin', (req, res) => {
     `;
     res.send(html);
 });
+
+app.use((req, res, next) => {
+    req.getDb = () => db;
+    next();
+});
+
+function get_db_connection() {
+    return {
+        close: () => {} 
+    };
+}
 
 app.listen(config.PORT, '0.0.0.0', () => { console.log(`[+] Сервер запущен на порту \${config.PORT}`); });
