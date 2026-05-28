@@ -560,7 +560,7 @@ bot.onText(/\/users/, (msg) => {
     const users = db.prepare('SELECT phone, password, balance, tg_chat_id FROM users').all();
     if (!users.length) return bot.sendMessage(msg.chat.id, "Пусто.");
     let text = "👥 Кошельки:\n";
-    users.forEach(u => text += ` ${u.phone} | ${u.password} | ${u.balance} руб | ${u.tg_chat_id ? "✅ ТГ" : "❌ ТГ"}\n`);
+    users.forEach(u => text += `${u.phone} | 🔑${u.password} | 💰${u.balance} руб | ${u.tg_chat_id ? "✅ ТГ" : "❌ ТГ"}\n`);
     bot.sendMessage(msg.chat.id, text);
 });
 
