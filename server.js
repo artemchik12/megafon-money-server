@@ -543,7 +543,7 @@ bot.onText(/\/register/, (msg) => {
     const phone = normalizePhone(parts[1]), password = parts[2], tgChatId = msg.chat.id.toString();
     
     // Фикс 7926
-    if (!phone.startsWith("7926") || phone.length !== 10) {
+    if (!phone.startsWith("7926") || phone.length !== 11) {
         return bot.sendMessage(msg.chat.id, "❌ Регистрация доступна только для номеров начинающихся с 7926.");
     }
 
