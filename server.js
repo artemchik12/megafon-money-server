@@ -26,7 +26,7 @@ if (fs.existsSync('config.json')) {
     }
 } else {
     fs.writeFileSync('config.json', JSON.stringify(config, null, 4), 'utf8');
-    console.log("[*] Создан стандартный файл конфигурации config.json. Пожалуйста, настройте его.");
+    console.log("[*] Создан стандартный Файл конфигурации config.json. Пожалуйста, настройте его.");
 }
 
 const app = express();
@@ -55,7 +55,6 @@ function normalizePhone(phone) {
     return cleaned;
 }
 
-// Умный поиск телефона получателя внутри JSON любой структуры
 function extractRecipient(reqData) {
     let phone = reqData.recipient || reqData.receiver_phone || reqData.destination || reqData.account || "";
     if (phone === "") {
@@ -138,15 +137,16 @@ app.post('/api/odp', (req, res) => {
             
             if (!phone) return res.json({ result: "error", text: "Не указан номер" });
             
-            const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
             const user = db.prepare('SELECT phone, tg_chat_id FROM users WHERE phone = ?').get(phone);
             
-            if (user) {
-                db.prepare('UPDATE users SET sms_code = ? WHERE phone = ?').run(smsCode, phone);
-                if (user.tg_chat_id) bot.sendMessage(user.tg_chat_id, `📩 СМС Код: ${smsCode}\nДля авто-ввода: мегафон ${smsCode}`).catch(()=>{});
-            } else {
-                db.prepare('INSERT INTO users (phone, password, sms_code, sid, balance) VALUES (?, ?, ?, ?, ?)').run(phone, '', smsCode, null, 1000.0);
+            // Фикс: Больше не создаем учетную запись автоматически
+            if (!user) {
+                return res.json({ result: "error", text: "Номер не зарегистрирован. Пройдите регистрацию в Telegram-боте." });
             }
+            
+            const smsCode = Math.floor(100000 + Math.random() * 900000).toString();
+            db.prepare('UPDATE users SET sms_code = ? WHERE phone = ?').run(smsCode, phone);
+            if (user.tg_chat_id) bot.sendMessage(user.tg_chat_id, `📩 СМС Код: ${smsCode}\nДля авто-ввода: мегафон ${smsCode}`).catch(()=>{});
             return res.json({ result: "ok" });
         }
 
@@ -163,9 +163,10 @@ app.post('/api/odp', (req, res) => {
             if (phone === "") return res.json({ result: "error", text: "Необходима авторизация" });
             
             const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
+            
+            // Фикс: Больше не создаем учетную запись автоматически
             if (!user) {
-                 db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(phone, password, null, 1000.0);
-                 notifyAdmin(`🆕 Создан профиль через приложение: ${phone}`);
+                 return res.json({ result: "error", code: "401", text: "Номер не зарегистрирован. Пройдите регистрацию в Telegram-боте." });
             } else {
                 if (user.password !== password && user.sms_code !== password) return res.json({ result: "error", text: "Неверный пароль", attempt_remain: "3" });
                 if (user.sms_code === password) db.prepare('UPDATE users SET sms_code = NULL WHERE phone = ?').run(phone);
@@ -246,7 +247,6 @@ app.post('/api/odp', (req, res) => {
             const user = getUserBySid();
             if (!user) return res.json({ result: "error", code: "401" });
 
-            // Читаем сумму напрямую в рублях (без деления на 100!)
             let amount = parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
 
             const fieldsArr = reqData.fields || reqData.field_vals;
@@ -274,11 +274,16 @@ app.post('/api/odp', (req, res) => {
             const sender = getUserBySid();
             const receiver_phone = extractRecipient(reqData);
             
-            // Читаем сумму напрямую в рублях (без деления на 100!)
             let amount = parseFloat(reqData.amount || reqData.sum || 0);
             
             if (!sender) return res.json({ result: "error", code: "401" });
             if (receiver_phone === "") return res.json({ result: "error", text: "Не указан получатель платежа" });
+            
+            // Фикс: Переводы доступны только на 7926
+            if (!receiver_phone.startsWith("7926") || receiver_phone.length !== 11) {
+                return res.json({ result: "error", text: "Переводы доступны только на номера МегаФон Москва (7926)" });
+            }
+            
             if (sender.balance < amount) return res.json({ result: "error", text: "Недостаточно средств" });
             
             let receiver = db.prepare('SELECT phone, tg_chat_id FROM users WHERE phone = ?').get(receiver_phone);
@@ -313,7 +318,6 @@ app.post('/api/odp', (req, res) => {
             const user = getUserBySid();
             if (!user) return res.json({ result: "error", code: "401" });
             
-            // Читаем сумму напрямую в рублях (без деления на 100!)
             let amount = parseFloat(reqData.amount || reqData.sum || 0);
 
             if (amount <= 0) return res.json({ result: "error", text: "Сумма <= 0" });
@@ -331,7 +335,6 @@ app.post('/api/odp', (req, res) => {
             const user = getUserBySid();
             if (!user) return res.json({ result: "error", code: "401" });
 
-            // Читаем сумму напрямую в рублях (без деления на 100!)
             let amount = action === "link_card" ? 0 : parseFloat(reqData.amount || reqData.sum || reqData.request_amount || 0);
             
             const fieldsArr = reqData.fields || reqData.field_vals;
@@ -479,7 +482,6 @@ app.post('/api/odp', (req, res) => {
 app.all('/fake_gateway', (req, res) => {
     const payment_id = req.body.payment_id || req.query.payment_id || "TRX_TEST";
     const amount = req.body.amount || req.query.amount || "0";
-    // Убираем деление на 100 и в HTML-шаблоне эквайринга
     res.send(`<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body { font-family: Arial; text-align: center; padding: 20px; } .card { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); } .btn { background: #00B956; color: white; padding: 15px; width: 100%; border: none; border-radius: 5px; font-size: 18px; cursor: pointer; }</style></head><body><div class="card"><h2 style="color: #00B956;">🔒 Тестовый Эквайринг</h2><p>Транзакция: ${payment_id}</p><h2>${amount > 0 ? parseFloat(amount) + ' ₽' : 'Привязка карты'}</h2><form action="/gateway_success" method="POST"><input type="hidden" name="payment_id" value="${payment_id}"><button type="submit" class="btn">Подтвердить</button></form></div></body></html>`);
 });
 
@@ -499,6 +501,12 @@ app.post('/gateway_success', (req, res) => {
         } else if (op.op_type === "p2p_card") {
             const receiver_phone = op.good_id;
             
+            // Фикс 7926 при оплате с карты
+            if (!receiver_phone.startsWith("7926") || receiver_phone.length !== 11) {
+                notifyAdmin(`⚠️ Попытка перевода с карты на некорректный номер: ${receiver_phone}`);
+                return;
+            }
+
             const receiverExists = db.prepare('SELECT phone FROM users WHERE phone = ?').get(receiver_phone);
             if (!receiverExists) {
                 db.prepare('INSERT INTO users (phone, password, sid, balance) VALUES (?, ?, ?, ?)').run(receiver_phone, '', null, 0.0);
@@ -531,8 +539,14 @@ bot.onText(/\/start|\/help/, (msg) => {
 
 bot.onText(/\/register/, (msg) => {
     const parts = msg.text.split(' ');
-    if (parts.length !== 3) return bot.sendMessage(msg.chat.id, "⚠️ Формат: /register 79260000000 123456");
+    if (parts.length !== 3) return bot.sendMessage(msg.chat.id, "⚠️ Формат: /register 7926000000 123456");
     const phone = normalizePhone(parts[1]), password = parts[2], tgChatId = msg.chat.id.toString();
+    
+    // Фикс 7926
+    if (!phone.startsWith("7926") || phone.length !== 10) {
+        return bot.sendMessage(msg.chat.id, "❌ Регистрация доступна только для номеров начинающихся с 7926.");
+    }
+
     try {
         const user = db.prepare('SELECT phone FROM users WHERE phone = ?').get(phone);
         if (user) {
