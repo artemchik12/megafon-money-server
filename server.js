@@ -48,7 +48,6 @@ function normalizePhone(phone) {
     if (cleaned.length === 11 && cleaned.startsWith('8')) {
         cleaned = '7' + cleaned.substring(1);
     }
-    // Если ввели без семерки (10 цифр)
     if (cleaned.length === 10 && cleaned.startsWith('9')) {
         cleaned = '7' + cleaned;
     }
@@ -73,20 +72,26 @@ function extractRecipient(reqData) {
     return normalizePhone(phone);
 }
 
-// Умный конвертер сумм (Приложение -> Сервер) [Копейки -> Рубли]
-function extractAmount(reqData) {
-    // Системные поля приходят в копейках -> делим на 100
-    if (reqData.amount !== undefined && reqData.amount !== null) return parseFloat(reqData.amount) / 100;
-    if (reqData.request_amount !== undefined && reqData.request_amount !== null) return parseFloat(reqData.request_amount) / 100;
-    
-    // Поля ручного ввода (массивы fields) приходят в рублях -> не делим
+// Умный парсер суммы в зависимости от метода
+function extractAmount(reqData, action) {
+    // Поля ручного ввода (массивы fields) всегда приходят в рублях -> не делим
     const fieldsArr = reqData.fields || reqData.field_vals;
     if (Array.isArray(fieldsArr)) {
         const sumField = fieldsArr.find(f => f.name === 'sum' || f.name === 'amount');
         if (sumField) return parseFloat(sumField.value); 
     }
+
+    // Если это пополнение баланса, приложение шлет сумму В РУБЛЯХ -> не делим
+    if (action === "fill_balance" || action === "refill_balance") {
+        if (reqData.amount !== undefined && reqData.amount !== null) return parseFloat(reqData.amount);
+        if (reqData.sum !== undefined && reqData.sum !== null) return parseFloat(reqData.sum);
+    } else {
+        // Переводы и эквайринг (send_transfer_msisdn, send_transfer_card) шлют в КОПЕЙКАХ -> делим на 100
+        if (reqData.amount !== undefined && reqData.amount !== null) return parseFloat(reqData.amount) / 100;
+        if (reqData.request_amount !== undefined && reqData.request_amount !== null) return parseFloat(reqData.request_amount) / 100;
+        if (reqData.sum !== undefined && reqData.sum !== null) return parseFloat(reqData.sum) / 100;
+    }
     
-    if (reqData.sum !== undefined && reqData.sum !== null) return parseFloat(reqData.sum) / 100;
     return 0;
 }
 
@@ -152,7 +157,7 @@ app.post('/api/odp', (req, res) => {
             
             const user = db.prepare('SELECT phone, tg_chat_id FROM users WHERE phone = ?').get(phone);
             
-            // запрет регистрации через приложение
+            // АВТОМАТИЧЕСКОЕ СОЗДАНИЕ - В С Ё!
             if (!user) {
                 return res.json({ result: "error", text: "Номер не зарегистрирован. Пройдите регистрацию в Telegram-боте." });
             }
@@ -177,7 +182,7 @@ app.post('/api/odp', (req, res) => {
             
             const user = db.prepare('SELECT * FROM users WHERE phone = ?').get(phone);
             
-            // запрет регистрации через приложение
+            // АВТОМАТИЧЕСКОЕ СОЗДАНИЕ - В С Ё
             if (!user) {
                  return res.json({ result: "error", code: "401", text: "Номер не зарегистрирован. Пройдите регистрацию в Telegram-боте." });
             } else {
@@ -193,8 +198,7 @@ app.post('/api/odp', (req, res) => {
         // баланс и профиль
         if (["balance", "quick_balance", "balance_widget"].includes(action)) {
             const user = getUserBySid();
-            // Возвращаем в РУБЛЯХ (без умножения на 100)
-            if (user) return res.json({ result: "ok", balance: user.balance });
+            if (user) return res.json({ result: "ok", balance: user.balance }); // Отдаем в рублях
             return res.json({ result: "error", code: "401" });
         }
         if (action === "get_msisdn") {
@@ -235,9 +239,7 @@ app.post('/api/odp', (req, res) => {
             
             const formatHistory = history.map(t => ({
                 transfer_id: t.id.toString(), bill_id: t.id.toString(), good_id: t.good_id || "service", description: t.description || "Операция",
-                datetime: t.date_time, date: t.date_time, 
-                amount: t.amount.toString(), // Возвращаем в РУБЛЯХ
-                status: t.status, status_message: "Успешно"
+                datetime: t.date_time, date: t.date_time, amount: t.amount.toString(), status: t.status, status_message: "Успешно"
             }));
             return res.json({ result: "ok", count: formatHistory.length.toString(), transfers: formatHistory });
         }
@@ -263,7 +265,7 @@ app.post('/api/odp', (req, res) => {
             const user = getUserBySid();
             if (!user) return res.json({ result: "error", code: "401" });
 
-            let amount = extractAmount(reqData);
+            let amount = extractAmount(reqData, action);
 
             if (amount <= 0) return res.json({ result: "error", text: "Ошибка: Сервер не нашел сумму платежа!" });
             if (user.balance < amount) return res.json({ result: "error", text: "Недостаточно средств на балансе!" });
@@ -283,7 +285,7 @@ app.post('/api/odp', (req, res) => {
         if (action === "send_transfer_msisdn") {
             const sender = getUserBySid();
             const receiver_phone = extractRecipient(reqData);
-            let amount = extractAmount(reqData);
+            let amount = extractAmount(reqData, action);
             
             if (!sender) return res.json({ result: "error", code: "401" });
             if (receiver_phone === "") return res.json({ result: "error", text: "Не указан получатель платежа" });
@@ -326,7 +328,7 @@ app.post('/api/odp', (req, res) => {
             const user = getUserBySid();
             if (!user) return res.json({ result: "error", code: "401" });
             
-            let amount = extractAmount(reqData);
+            let amount = extractAmount(reqData, action);
 
             if (amount <= 0) return res.json({ result: "error", text: "Сумма <= 0" });
             
@@ -343,9 +345,9 @@ app.post('/api/odp', (req, res) => {
             const user = getUserBySid();
             if (!user) return res.json({ result: "error", code: "401" });
 
-            let amount = action === "link_card" ? 0 : extractAmount(reqData);
+            let amount = action === "link_card" ? 0 : extractAmount(reqData, action);
+
             const transfer_id = "trx_" + Math.floor(100000 + Math.random() * 900000);
-            
             let op_type = "topup_new_card";
             let target = ""; 
 
@@ -364,16 +366,13 @@ app.post('/api/odp', (req, res) => {
 
             db.prepare('INSERT INTO pending_ops (transfer_id, phone, op_type, amount, good_id) VALUES (?, ?, ?, ?, ?)').run(transfer_id, user.phone, op_type, amount, target);
             const acquirer_url = `http://${req.get('host')}/fake_gateway`;
-            // Для Webview сумму отдаем строкой в РУБЛЯХ (он покажет ее как есть)
             return res.json({ result: "ok", transfer_id: transfer_id, acquirer_url: acquirer_url, acquirer_post: { payment_id: transfer_id, amount: amount.toString() }});
         }
 
-        // Исправлено: поддержка transfer_results
         if (action === "transfer_results" || action === "transfer_result") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok", error_message: "Платеж успешно проведен!" });
 
         // каталог услуг,оферта
         if (action === "transfer_terms" || action === "get_transfer_terms") {
-            // Лимиты отправляются в РУБЛЯХ
             return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
         }
         
@@ -395,14 +394,14 @@ app.post('/api/odp', (req, res) => {
 
         // получение средств при переводе 
         if (action === "get_transfer_receive_methods") {
-            return res.json({
-                result: "ok",
-                methods: [
-                    { description: "На счет телефона", method: "msisdn", fields: [] },
-                    { description: "На банковскую карту", method: "card", fields: [ { limit: 16, list: false, required: true, type: "text", regex: "/[0-9]{16}/", description: "Номер карты", name: "card" }, { limit: 4, list: false, required: true, type: "text", regex: "/[0-9]{4}/", description: "Срок действия", name: "expiry" } ] },
-                    { description: "Наличными в отделениях Юнистрим", method: "unistream", fields: [ { limit: 32, list: false, required: true, type: "text", regex: "/^([a-zA-Zа-яА-ЯёЁъЪ\\-]{1,32})$/u", description: "Фамилия", name: "lastname" }, { limit: 32, list: false, required: true, type: "text", regex: "/^([a-zA-Zа-яА-ЯёЁъЪ]{1,32})$/u", description: "Имя", name: "firstname" }, { limit: 32, list: false, required: true, type: "text", regex: "/^([a-zA-Zа-яА-ЯёЁъЪ\\s]{0,32})$/u", description: "Отчество", name: "middlename" } ] }
-                ]
-            });
+            if (fs.existsSync('transfer_methods.txt')) {
+                 return res.json(JSON.parse(fs.readFileSync('transfer_methods.txt', 'utf8')));
+            }
+            return res.json({ result: "ok", methods: [
+                { description: "На счет телефона", method: "msisdn", fields: [] },
+                { description: "На банковскую карту", method: "card", fields: [ { limit: 16, list: false, required: true, type: "text", regex: "/[0-9]{16}/", description: "Номер карты", name: "card" }, { limit: 4, list: false, required: true, type: "text", regex: "/[0-9]{4}/", description: "Срок действия", name: "expiry" } ] },
+                { description: "Наличными в отделениях Юнистрим", method: "unistream", fields: [ { limit: 32, list: false, required: true, type: "text", regex: "/^([a-zA-Zа-яА-ЯёЁъЪ\\-]{1,32})$/u", description: "Фамилия", name: "lastname" }, { limit: 32, list: false, required: true, type: "text", regex: "/^([a-zA-Zа-яА-ЯёЁъЪ]{1,32})$/u", description: "Имя", name: "firstname" }, { limit: 32, list: false, required: true, type: "text", regex: "/^([a-zA-Zа-яА-ЯёЁъЪ\\s]{0,32})$/u", description: "Отчество", name: "middlename" } ] }
+            ]});
         }
 
         // список регионов
@@ -425,7 +424,7 @@ app.post('/api/odp', (req, res) => {
             return res.json({ result: "ok", text: "Квитанция успешно отправлена на указанный адрес." });
         }
 
-        // получение перевода
+        // получение перевода (опять???) (разрабы мегафона удивляют)
         if (action === "receive_transfer") {
             const user = getUserBySid();
             if (!user) return res.json({ result: "error", code: "401" });
@@ -456,11 +455,7 @@ app.post('/api/odp', (req, res) => {
 
             notifyAdmin(`перевод получен!\nКошелек: ${user.phone}\nСумма: ${amount} руб.\nСпособ получения: ${methodText}`);
 
-            return res.json({
-                result: "ok",
-                transfer_id: transferId,
-                error_message: `Перевод на сумму ${amount} руб. успешно получен!`
-            });
+            return res.json({ result: "ok", transfer_id: transferId, error_message: `Перевод на сумму ${amount} руб. успешно получен!` });
         }
 
         // ловим непонятные методы и возвращаем ошибку что метод не обработан
@@ -499,6 +494,7 @@ app.post('/gateway_success', (req, res) => {
         } else if (op.op_type === "p2p_card") {
             const receiver_phone = op.good_id;
             
+            // Фикс 7926 при оплате с карты
             if (!receiver_phone.startsWith("7926") || receiver_phone.length !== 11) {
                 notifyAdmin(`Попытка перевода с карты на некорректный номер: ${receiver_phone}`);
                 return;
@@ -579,6 +575,7 @@ bot.onText(/\/add_money (.+) (.+)/, (msg, match) => {
         bot.sendMessage(msg.chat.id, `Баланс ${match[1]} пополнен.`);
     } catch(e) {}
 });
+
 
 // панель админа
 app.get('/api/admin/stats', (req, res) => {
