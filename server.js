@@ -373,7 +373,7 @@ app.post('/api/odp', (req, res) => {
 
         // каталог услуг,оферта
         if (action === "transfer_terms" || action === "get_transfer_terms") {
-            return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
+            return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "1500000", max_daily_amount: "50000", max_monthly_amount: "100000" });
         }
         
         if (action === "offer_text" || action === "get_oferta") return res.json({ result: "ok", offer_id: "v1", offer: "Добро пожаловать в эмулятор МегаФон Деньги!" });
