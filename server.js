@@ -273,7 +273,7 @@ app.post('/api/odp', (req, res) => {
             if (receiver_phone === "") return res.json({ result: "error", text: "Не указан получатель платежа" });
             
             // номер получателя должен начинатся с 7926
-            if (!receiver_phone.startsWith("926") || receiver_phone.length !== 10) {
+            if (!receiver_phone.startsWith("7926") || receiver_phone.length !== 10) {
                 return res.json({ result: "error", text: "Переводы доступны только на номера 926" });
             }
             
@@ -362,7 +362,7 @@ app.post('/api/odp', (req, res) => {
         if (action === "transfer_results") return res.json({ result: "ok", transfer_id: reqData.transfer_id || "", transfer_complete: "1", transfer_status: "ok", error_message: "Платеж успешно проведен!" });
 
         // каталог услуг,оферта
-        if (action === "transfer_terms" || action === "get_transfer_terms") return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "15000", max_daily_amount: "50000", max_monthly_amount: "100000" });
+        if (action === "transfer_terms" || action === "get_transfer_terms") return res.json({ result: "ok", comission: "0", min_amount: "1", max_amount: "1500000", max_daily_amount: "50000", max_monthly_amount: "100000" });
         if (action === "offer_text" || action === "get_oferta") return res.json({ result: "ok", offer_id: "v1", offer: "Добро пожаловать в эмулятор МегаФон Деньги!" });
 
         if (action === "get_catalog" || action === "catalog_list") {
