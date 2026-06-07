@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
-// в let конфиг если нет config.json (он также вставляется в конфиг при его создании см. стр. 26-28
+// переменная с конфигом (он также вставляется в конфиг при его создании см. стр. 26-28
 let config = {
     BOT_TOKEN: "ВАШ_ТОКЕН",
     ADMIN_CHAT_ID: "ВАШ_CHAT_ID",
