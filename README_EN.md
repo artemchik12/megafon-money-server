@@ -2,7 +2,7 @@
 
 A full-fledged standalone emulator server (backend) for the old Android application **MegaFon Money** (approximately 2012 year of release). The project was created as part of reverse engineering and the study of the architecture of mobile financial applications of the Android 2.3 - 4.x era.
 
-The server emulates the old MegaFon API (`/api/odp'), allows the application to function fully on the local network, saves the wallet status to the SQLite database, and is managed via a Telegram bot.
+The server emulates the old MegaFon API ('/api/odp'), allows the application to function fully on the local network, saves the wallet status to the SQLite database, and is managed via a Telegram bot.
 
 ## ✨ Features of the implemented server
 
